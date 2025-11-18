@@ -93,10 +93,13 @@ export default function Home() {
   const [deletingDocumentId, setDeletingDocumentId] = useState<string | null>(null);
   const [deletingNotebookId, setDeletingNotebookId] = useState<string | null>(null);
   const [deletingChatId, setDeletingChatId] = useState<string | null>(null);
-  const [showDocumentsPanel, setShowDocumentsPanel] = useState(true);
   const [expandedSummaries, setExpandedSummaries] = useState<Record<string, boolean>>({});
   const [feedbackDrafts, setFeedbackDrafts] = useState<Record<string, FeedbackDraft>>({});
+  const [showCreateModal, setShowCreateModal] = useState(false);
   const emptyDraft: FeedbackDraft = { rating: null, notes: '', revisedAnswer: '', status: 'idle' };
+
+  // Determina se estamos na view de chat ou na página inicial
+  const isChatView = selectedNotebookId !== null;
 
   const loadDocuments = useCallback(async () => {
     const response = await fetch('/api/documents', { cache: 'no-store' });
@@ -116,24 +119,24 @@ export default function Home() {
     }
     const payload = await response.json();
     setNotebooks(payload.data ?? []);
-    if (!selectedNotebookId && payload.data?.length) {
-      setSelectedNotebookId(payload.data[0].id);
-    }
-  }, [selectedNotebookId]);
+  }, []);
 
   const loadChats = useCallback(async () => {
+    if (!selectedNotebookId) return;
     const response = await fetch('/api/chats', { cache: 'no-store' });
     if (!response.ok) {
       setStatusMessage('Erro ao carregar chats');
       return;
     }
     const payload = await response.json();
-    setChats(payload.data ?? []);
-  }, []);
+    const allChats = payload.data ?? [];
+    const filtered = allChats.filter((chat: ChatRecord) => chat.notebook_id === selectedNotebookId);
+    setChats(filtered);
+  }, [selectedNotebookId]);
 
   const loadMessages = useCallback(
     async (chatId: string) => {
-    const response = await fetch(`/api/chats/${chatId}/messages`, { cache: 'no-store' });
+      const response = await fetch(`/api/chats/${chatId}/messages`, { cache: 'no-store' });
       if (!response.ok) {
         setStatusMessage('Erro ao carregar mensagens');
         return;
@@ -147,8 +150,19 @@ export default function Home() {
   useEffect(() => {
     loadDocuments();
     loadNotebooks();
-    loadChats();
-  }, [loadDocuments, loadNotebooks, loadChats]);
+  }, [loadDocuments, loadNotebooks]);
+
+  useEffect(() => {
+    if (selectedNotebookId) {
+      loadChats();
+    }
+  }, [selectedNotebookId, loadChats]);
+
+  useEffect(() => {
+    if (selectedNotebookId && chats.length > 0 && !selectedChatId) {
+      setSelectedChatId(chats[0].id);
+    }
+  }, [selectedNotebookId, chats, selectedChatId]);
 
   useEffect(() => {
     if (selectedChatId) {
@@ -213,8 +227,9 @@ export default function Home() {
         throw new Error(payload.error ?? 'Erro ao criar notebook');
       }
       setNotebookForm({ name: '', description: '', documentIds: [] });
+      setShowCreateModal(false);
       await loadNotebooks();
-      setStatusMessage('Notebook criado');
+      setStatusMessage('Agente criado com sucesso');
     } catch (error) {
       setStatusMessage((error as Error).message);
     } finally {
@@ -235,22 +250,8 @@ export default function Home() {
     });
   };
 
-  const filteredChats = useMemo(
-    () => chats.filter((chat) => chat.notebook_id === selectedNotebookId),
-    [chats, selectedNotebookId]
-  );
-
-  useEffect(() => {
-    if (!selectedChatId && filteredChats.length) {
-      setSelectedChatId(filteredChats[0].id);
-    }
-  }, [filteredChats, selectedChatId]);
-
   const handleCreateChat = async (notebookId: string) => {
     try {
-      // Garante que o notebook esteja selecionado para que o chat apareça na lista filtrada
-      setSelectedNotebookId(notebookId);
-      
       const response = await fetch('/api/chats', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -264,8 +265,8 @@ export default function Home() {
       await loadChats();
       if (newChatId) {
         setSelectedChatId(newChatId);
+        setStatusMessage('Chat criado');
       }
-      setStatusMessage('Chat criado');
     } catch (error) {
       setStatusMessage((error as Error).message);
     } finally {
@@ -324,7 +325,7 @@ export default function Home() {
         setSelectedChatId(null);
         setMessages([]);
       }
-      setStatusMessage('Notebook removido');
+      setStatusMessage('Agente removido');
     } catch (error) {
       setStatusMessage((error as Error).message);
     } finally {
@@ -408,6 +409,18 @@ export default function Home() {
       setSendingMessage(false);
       setTimeout(() => setStatusMessage(null), 4000);
     }
+  };
+
+  const handleNotebookClick = (notebookId: string) => {
+    setSelectedNotebookId(notebookId);
+    setSelectedChatId(null);
+    setMessages([]);
+  };
+
+  const handleBackToHome = () => {
+    setSelectedNotebookId(null);
+    setSelectedChatId(null);
+    setMessages([]);
   };
 
   const getFeedbackDraft = (messageId: string) => feedbackDrafts[messageId] ?? emptyDraft;
@@ -499,498 +512,569 @@ export default function Home() {
     }
   };
 
-  return (
-    <div className="flex h-screen w-full flex-col bg-gray-50 text-gray-900 overflow-hidden">
-      {/* Header */}
-      <header className="flex-shrink-0 border-b border-gray-200 bg-white px-4 py-3">
-        <div className="flex items-center justify-between">
-          <h1 className="text-lg font-semibold text-gray-900">Sanama - Hub de Consultas</h1>
-            {statusMessage && (
-            <span className="rounded-full bg-gray-900 px-3 py-1 text-xs text-white">{statusMessage}</span>
-            )}
-        </div>
-      </header>
+  const selectedNotebook = notebooks.find((n) => n.id === selectedNotebookId);
 
-      {/* Main Content Area */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* Sidebar Esquerda - Notebooks */}
-        <aside className="flex-shrink-0 w-64 border-r border-gray-200 bg-white overflow-y-auto">
-          <div className="p-4">
-            <div className="mb-4">
-              <h2 className="text-sm font-semibold text-gray-900">Agentes de consulta</h2>
+  // Página inicial: lista de agentes
+  if (!isChatView) {
+    return (
+      <div className="flex h-screen w-full bg-gradient-to-br from-slate-50 via-white to-slate-50">
+        {/* Sidebar de Documentos */}
+        <aside className="flex-shrink-0 w-80 border-r border-slate-200/60 bg-white/80 backdrop-blur-sm overflow-y-auto">
+          <div className="p-6">
+            <div className="mb-6">
+              <h2 className="text-sm font-semibold text-slate-900 mb-1">Documentos</h2>
+              <p className="text-xs text-slate-500">Gerencie seus documentos</p>
             </div>
-            
-            {/* Form de criação de notebook */}
-            <form className="mb-6 space-y-3" onSubmit={handleNotebookSubmit}>
-              <input
-                type="text"
-                placeholder="Novo notebook..."
-                value={notebookForm.name}
-                onChange={(event) => setNotebookForm((prev) => ({ ...prev, name: event.target.value }))}
-                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-gray-400 focus:outline-none"
-                required
-              />
-              <textarea
-                placeholder="Descrição (opcional)"
-                value={notebookForm.description}
-                onChange={(event) => setNotebookForm((prev) => ({ ...prev, description: event.target.value }))}
-                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-gray-400 focus:outline-none resize-none"
-                rows={2}
-              />
-              {documents.length > 0 && (
-                <div className="max-h-32 space-y-1.5 overflow-y-auto rounded-lg border border-dashed border-gray-200 p-2">
-                  <p className="text-xs font-medium text-gray-500 mb-1">Documentos</p>
-                {documents.map((document) => (
-                    <label key={document.id} className="flex items-center gap-2 text-xs cursor-pointer hover:bg-gray-50 p-1 rounded">
-                    <input
-                      type="checkbox"
-                      checked={notebookForm.documentIds.includes(document.id)}
-                      onChange={() => handleDocumentSelection(document.id)}
-                        className="rounded"
-                    />
-                      <span className="text-gray-600 truncate">{document.title ?? document.original_filename}</span>
-                  </label>
-                ))}
-              </div>
-              )}
-              <button
-                type="submit"
-                disabled={creatingNotebook}
-                className="w-full rounded-lg bg-gray-900 px-3 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {creatingNotebook ? 'Criando...' : 'Criar agente'}
-              </button>
-            </form>
 
-            {/* Lista de notebooks */}
-            <div className="space-y-1">
-              {notebooks.map((notebook) => (
-                <div
-                  key={notebook.id}
-                  className={`rounded-lg px-3 py-2 text-sm cursor-pointer transition-colors ${
-                    selectedNotebookId === notebook.id 
-                      ? 'bg-gray-100 text-gray-900' 
-                      : 'text-gray-700 hover:bg-gray-50'
-                  }`}
-                  onClick={() => setSelectedNotebookId(notebook.id)}
+            {/* Upload de documentos */}
+            <div className="mb-6 p-4 border border-slate-200 rounded-xl bg-gradient-to-br from-slate-50 to-white shadow-sm hover:shadow-md transition-all duration-300">
+              <h3 className="text-xs font-semibold text-slate-900 mb-3">Upload</h3>
+              <form onSubmit={handleUpload} className="space-y-3">
+                <input
+                  type="text"
+                  name="title"
+                  placeholder="Título (opcional)"
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200/50 transition-all duration-200"
+                />
+                <input
+                  type="file"
+                  name="files"
+                  accept="application/pdf,image/png,image/jpeg"
+                  className="w-full text-xs file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-900 file:text-white hover:file:bg-slate-800 file:transition-colors file:duration-200 cursor-pointer"
+                  multiple
+                  required
+                />
+                <button
+                  type="submit"
+                  disabled={uploading}
+                  className="w-full rounded-lg bg-slate-900 px-3 py-2 text-xs font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 transition-all duration-200 hover:shadow-md active:scale-[0.98]"
                 >
-                  <div className="flex items-start justify-between gap-2">
+                  {uploading ? 'Processando...' : 'Enviar'}
+                </button>
+              </form>
+            </div>
+
+            {/* Lista de documentos */}
+            <div className="space-y-2">
+              {documents.map((document) => (
+                <article
+                  key={document.id}
+                  className="rounded-xl border border-slate-200 p-3 hover:bg-slate-50 hover:border-slate-300 hover:shadow-sm transition-all duration-200 group"
+                >
+                  <div className="flex items-start justify-between gap-2 mb-2">
                     <div className="flex-1 min-w-0">
-                      <p className="font-medium truncate">{notebook.name}</p>
-                      {notebook.description && (
-                        <p className="text-xs text-gray-500 truncate mt-0.5">{notebook.description}</p>
-                      )}
+                      <p className="text-xs font-medium text-slate-900 truncate group-hover:text-slate-700 transition-colors">
+                        {document.title ?? document.original_filename}
+                      </p>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        {new Date(document.created_at).toLocaleDateString('pt-BR')}
+                      </p>
                     </div>
-                    <div className="flex gap-1 flex-shrink-0">
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium transition-colors ${statusBadge(document.status)}`}>
+                        {statusLabel(document.status)}
+                      </span>
                       <button
                         type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleCreateChat(notebook.id);
-                        }}
-                        className="text-xs text-gray-400 hover:text-gray-600"
-                        title="Novo chat"
-                      >
-                        +
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteNotebook(notebook.id);
-                        }}
-                        disabled={deletingNotebookId === notebook.id}
-                        className="text-xs text-gray-400 hover:text-red-600 disabled:opacity-50"
+                        onClick={() => handleDeleteDocument(document.id)}
+                        disabled={deletingDocumentId === document.id}
+                        className="text-xs text-slate-400 hover:text-red-600 disabled:opacity-50 transition-colors duration-200 opacity-0 group-hover:opacity-100"
                         title="Excluir"
                       >
                         ×
                       </button>
                     </div>
                   </div>
-                </div>
+                  {document.summary && (
+                    <div className="mt-2">
+                      <button
+                        type="button"
+                        onClick={() => toggleDocumentSummary(document.id)}
+                        className="text-xs text-slate-600 hover:text-slate-900 font-medium flex items-center gap-1 w-full text-left transition-colors duration-200"
+                      >
+                        <span className="transition-transform duration-200">{expandedSummaries[document.id] ? '▼' : '▶'}</span>
+                        <span>Resumo</span>
+                      </button>
+                      {expandedSummaries[document.id] && (
+                        <p className="mt-2 text-xs text-slate-600 leading-relaxed pl-4 animate-in fade-in slide-in-from-top-2 duration-200">
+                          {document.summary}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </article>
               ))}
-              {!notebooks.length && (
-                <p className="text-xs text-gray-500 text-center py-4">Nenhum notebook ainda</p>
+              {!documents.length && (
+                <p className="text-xs text-slate-500 text-center py-8">Nenhum documento ainda</p>
               )}
             </div>
           </div>
         </aside>
 
-        {/* Área Central - Conversas e Chat */}
-        <main className="flex-1 flex flex-col overflow-hidden">
-          <div className="flex flex-1 overflow-hidden">
-            {/* Sidebar de Conversas */}
-            <aside className="flex-shrink-0 w-64 border-r border-gray-200 bg-white overflow-y-auto">
-              <div className="p-4">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-sm font-semibold text-gray-900">Conversas</h2>
-                  {selectedNotebookId && (
-                    <button 
-                      type="button" 
-                      onClick={() => handleCreateChat(selectedNotebookId)} 
-                      className="rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800 transition-colors"
-                      title="Nova conversa"
-                    >
-                      + Novo
-                    </button>
-                  )}
-                </div>
-                <div className="space-y-1">
-              {filteredChats.map((chat) => (
+        {/* Área Central - Lista de Agentes */}
+        <main className="flex-1 overflow-y-auto">
+          <div className="max-w-6xl mx-auto px-8 py-12">
+            <div className="mb-8">
+              <h1 className="text-3xl font-bold text-slate-900 mb-2">Agentes de Consulta</h1>
+              <p className="text-slate-600">Selecione um agente para começar a conversar</p>
+            </div>
+
+            {/* Grid de Agentes */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
+              {notebooks.map((notebook) => (
                 <div
-                  key={chat.id}
-                      className={`rounded-lg px-3 py-2 text-sm cursor-pointer transition-colors ${
-                        chat.id === selectedChatId 
-                          ? 'bg-gray-100 text-gray-900' 
-                          : 'text-gray-700 hover:bg-gray-50'
-                      }`}
-                      onClick={() => setSelectedChatId(chat.id)}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex-1 min-w-0">
-                          <p className="font-medium truncate">{chat.title ?? 'Chat sem título'}</p>
-                          {chat.last_message_at && (
-                            <p className="text-xs text-gray-500 mt-0.5">
-                              {new Date(chat.last_message_at).toLocaleTimeString('pt-BR', { 
-                                hour: '2-digit', 
-                                minute: '2-digit' 
-                              })}
-                            </p>
-                          )}
-                        </div>
+                  key={notebook.id}
+                  onClick={() => handleNotebookClick(notebook.id)}
+                  className="group relative rounded-2xl border border-slate-200 bg-white p-6 hover:border-slate-300 hover:shadow-lg transition-all duration-300 cursor-pointer hover:-translate-y-1"
+                >
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="flex-1 min-w-0">
+                      <h3 className="text-base font-semibold text-slate-900 mb-1 group-hover:text-slate-700 transition-colors">
+                        {notebook.name}
+                      </h3>
+                      {notebook.description && (
+                        <p className="text-sm text-slate-600 line-clamp-2">{notebook.description}</p>
+                      )}
+                    </div>
                     <button
                       type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteChat(chat.id);
-                          }}
-                      disabled={deletingChatId === chat.id}
-                          className="text-xs text-gray-400 hover:text-red-600 disabled:opacity-50 flex-shrink-0"
-                          title="Excluir"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteNotebook(notebook.id);
+                      }}
+                      disabled={deletingNotebookId === notebook.id}
+                      className="text-slate-400 hover:text-red-600 disabled:opacity-50 transition-colors duration-200 opacity-0 group-hover:opacity-100 ml-2"
+                      title="Excluir"
                     >
-                          ×
+                      ×
+                    </button>
+                  </div>
+                  <div className="flex items-center text-xs text-slate-500 mt-4">
+                    <span>Criado em {new Date(notebook.created_at).toLocaleDateString('pt-BR')}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Botão Criar Agente */}
+            <div className="flex justify-center">
+              <button
+                type="button"
+                onClick={() => setShowCreateModal(true)}
+                className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-medium text-white hover:bg-slate-800 transition-all duration-200 hover:shadow-lg active:scale-[0.98]"
+              >
+                + Criar agente
+              </button>
+            </div>
+
+            {!notebooks.length && (
+              <div className="text-center py-16">
+                <p className="text-slate-500 mb-4">Nenhum agente criado ainda</p>
+                <button
+                  type="button"
+                  onClick={() => setShowCreateModal(true)}
+                  className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-medium text-white hover:bg-slate-800 transition-all duration-200 hover:shadow-lg active:scale-[0.98]"
+                >
+                  Criar primeiro agente
+                </button>
+              </div>
+            )}
+          </div>
+        </main>
+
+        {/* Modal de Criação de Agente */}
+        {showCreateModal && (
+          <div
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-200"
+            onClick={() => setShowCreateModal(false)}
+          >
+            <div
+              className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 animate-in zoom-in-95 duration-200"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="mb-6">
+                <h2 className="text-xl font-semibold text-slate-900 mb-1">Criar novo agente</h2>
+                <p className="text-sm text-slate-600">Configure seu agente de consulta</p>
+              </div>
+
+              <form onSubmit={handleNotebookSubmit} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-900 mb-1.5">Nome do agente</label>
+                  <input
+                    type="text"
+                    placeholder="Ex: Assistente de Vendas"
+                    value={notebookForm.name}
+                    onChange={(event) => setNotebookForm((prev) => ({ ...prev, name: event.target.value }))}
+                    className="w-full rounded-lg border border-slate-200 px-4 py-2.5 text-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200/50 transition-all duration-200"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-900 mb-1.5">Descrição (opcional)</label>
+                  <textarea
+                    placeholder="Descreva o propósito deste agente..."
+                    value={notebookForm.description}
+                    onChange={(event) => setNotebookForm((prev) => ({ ...prev, description: event.target.value }))}
+                    className="w-full rounded-lg border border-slate-200 px-4 py-2.5 text-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200/50 transition-all duration-200 resize-none"
+                    rows={3}
+                  />
+                </div>
+
+                {documents.length > 0 && (
+                  <div>
+                    <label className="block text-sm font-medium text-slate-900 mb-1.5">Documentos</label>
+                    <div className="max-h-48 space-y-2 overflow-y-auto rounded-lg border border-slate-200 p-3 bg-slate-50">
+                      {documents.map((document) => (
+                        <label
+                          key={document.id}
+                          className="flex items-center gap-2 text-sm cursor-pointer hover:bg-white p-2 rounded-lg transition-colors duration-200"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={notebookForm.documentIds.includes(document.id)}
+                            onChange={() => handleDocumentSelection(document.id)}
+                            className="rounded border-slate-300 text-slate-900 focus:ring-slate-200"
+                          />
+                          <span className="text-slate-700 truncate">{document.title ?? document.original_filename}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowCreateModal(false);
+                      setNotebookForm({ name: '', description: '', documentIds: [] });
+                    }}
+                    className="flex-1 rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-all duration-200"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={creatingNotebook}
+                    className="flex-1 rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 transition-all duration-200 active:scale-[0.98]"
+                  >
+                    {creatingNotebook ? 'Criando...' : 'Criar agente'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* Status Message */}
+        {statusMessage && (
+          <div className="fixed bottom-4 right-4 bg-slate-900 text-white px-4 py-2 rounded-lg shadow-lg text-sm animate-in slide-in-from-bottom-4 duration-200 z-50">
+            {statusMessage}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // View de Chat
+  return (
+    <div className="flex h-screen w-full flex-col bg-gradient-to-br from-slate-50 via-white to-slate-50">
+      {/* Navbar */}
+      <nav className="flex-shrink-0 border-b border-slate-200/60 bg-white/80 backdrop-blur-sm px-6 py-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <button
+              type="button"
+              onClick={handleBackToHome}
+              className="flex items-center gap-2 text-slate-600 hover:text-slate-900 transition-colors duration-200 group"
+            >
+              <svg
+                className="w-5 h-5 group-hover:-translate-x-1 transition-transform duration-200"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+              </svg>
+              <span className="text-sm font-medium">Voltar</span>
+            </button>
+            <div className="h-6 w-px bg-slate-200" />
+            <div>
+              <h1 className="text-lg font-semibold text-slate-900">{selectedNotebook?.name ?? 'Agente'}</h1>
+              {selectedNotebook?.description && (
+                <p className="text-xs text-slate-500 mt-0.5">{selectedNotebook.description}</p>
+              )}
+            </div>
+          </div>
+          {statusMessage && (
+            <span className="rounded-full bg-slate-900 px-3 py-1 text-xs text-white animate-in fade-in duration-200">
+              {statusMessage}
+            </span>
+          )}
+        </div>
+      </nav>
+
+      {/* Main Content Area */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* Sidebar de Conversas */}
+        <aside className="flex-shrink-0 w-64 border-r border-slate-200/60 bg-white/80 backdrop-blur-sm overflow-y-auto">
+          <div className="p-4">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-semibold text-slate-900">Conversas</h2>
+              <button
+                type="button"
+                onClick={() => handleCreateChat(selectedNotebookId!)}
+                className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 transition-all duration-200 hover:shadow-md active:scale-[0.98]"
+                title="Nova conversa"
+              >
+                + Novo
+              </button>
+            </div>
+            <div className="space-y-1">
+              {chats.map((chat) => (
+                <div
+                  key={chat.id}
+                  className={`group rounded-lg px-3 py-2 text-sm cursor-pointer transition-all duration-200 ${
+                    chat.id === selectedChatId
+                      ? 'bg-slate-100 text-slate-900 shadow-sm'
+                      : 'text-slate-700 hover:bg-slate-50'
+                  }`}
+                  onClick={() => setSelectedChatId(chat.id)}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium truncate">{chat.title ?? 'Chat sem título'}</p>
+                      {chat.last_message_at && (
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          {new Date(chat.last_message_at).toLocaleTimeString('pt-BR', {
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          })}
+                        </p>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteChat(chat.id);
+                      }}
+                      disabled={deletingChatId === chat.id}
+                      className="text-xs text-slate-400 hover:text-red-600 disabled:opacity-50 transition-colors duration-200 flex-shrink-0 opacity-0 group-hover:opacity-100"
+                      title="Excluir"
+                    >
+                      ×
                     </button>
                   </div>
                 </div>
               ))}
-                  {!filteredChats.length && (
-                    <p className="text-xs text-gray-500 text-center py-4">
-                      {selectedNotebookId ? 'Crie um chat para começar' : 'Selecione um notebook'}
-                    </p>
-                  )}
+              {!chats.length && (
+                <p className="text-xs text-slate-500 text-center py-4">Crie um chat para começar</p>
+              )}
             </div>
           </div>
-            </aside>
+        </aside>
 
-            {/* Área de Chat */}
-            <div className="flex-1 flex flex-col overflow-hidden bg-white">
-              <div className="flex-1 overflow-y-auto">
-                <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
-                  {messages.length === 0 ? (
-                    <div className="flex items-center justify-center h-full">
-                      <div className="text-center">
-                        <h3 className="text-lg font-semibold text-gray-900 mb-2">Como posso ajudar?</h3>
-                        <p className="text-sm text-gray-500">Faça uma pergunta sobre seus documentos</p>
-                      </div>
-                    </div>
-                  ) : (
-                    messages.map((message) => {
-                      const autoReview = resolveAutoReview(message.metadata ?? null);
-                      const coverage = resolveCoverage(message.metadata ?? null);
-                      const draft = getFeedbackDraft(message.id);
-                      return (
+        {/* Área de Chat */}
+        <div className="flex-1 flex flex-col overflow-hidden bg-white">
+          <div className="flex-1 overflow-y-auto">
+            <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
+              {messages.length === 0 ? (
+                <div className="flex items-center justify-center h-full">
+                  <div className="text-center">
+                    <h3 className="text-lg font-semibold text-slate-900 mb-2">Como posso ajudar?</h3>
+                    <p className="text-sm text-slate-500">Faça uma pergunta sobre seus documentos</p>
+                  </div>
+                </div>
+              ) : (
+                messages.map((message) => {
+                  const autoReview = resolveAutoReview(message.metadata ?? null);
+                  const coverage = resolveCoverage(message.metadata ?? null);
+                  const draft = getFeedbackDraft(message.id);
+                  return (
+                    <div
+                      key={message.id}
+                      className={`flex gap-4 ${message.role === 'user' ? 'justify-end' : 'justify-start'} animate-in fade-in slide-in-from-bottom-2 duration-300`}
+                    >
+                      {message.role === 'assistant' && (
+                        <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gradient-to-br from-slate-200 to-slate-300 flex items-center justify-center text-sm font-semibold text-slate-700 shadow-sm">
+                          AI
+                        </div>
+                      )}
+                      <div className={`flex-1 max-w-[85%] ${message.role === 'user' ? 'order-2' : ''}`}>
                         <div
-                          key={message.id}
-                          className={`flex gap-4 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                          className={`rounded-2xl px-4 py-3 shadow-sm transition-all duration-200 ${
+                            message.role === 'user'
+                              ? 'bg-slate-900 text-white'
+                              : 'bg-slate-100 text-slate-900 border border-slate-200/60'
+                          }`}
                         >
-                          {message.role === 'assistant' && (
-                            <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center text-sm font-semibold">
-                              AI
+                          {message.pending && message.role === 'assistant' ? (
+                            <div className="flex items-center gap-2 text-slate-500">
+                              <span className="inline-flex h-2 w-2 animate-ping rounded-full bg-slate-400"></span>
+                              <span className="text-sm">Pensando...</span>
+                            </div>
+                          ) : (
+                            <div className={`text-sm leading-relaxed ${message.pending ? 'opacity-70' : ''}`}>
+                              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                                {formatMessageContent(message.content)}
+                              </ReactMarkdown>
                             </div>
                           )}
-                          <div className={`flex-1 max-w-[85%] ${message.role === 'user' ? 'order-2' : ''}`}>
-                            <div
-                              className={`rounded-2xl px-4 py-3 ${
-                                message.role === 'user' ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-900'
-                              }`}
-                            >
-                              {message.pending && message.role === 'assistant' ? (
-                                <div className="flex items-center gap-2 text-gray-500">
-                                  <span className="inline-flex h-2 w-2 animate-ping rounded-full bg-gray-400"></span>
-                                  <span className="text-sm">Pensando...</span>
-                                </div>
-                              ) : (
-                                <div className={`text-sm leading-relaxed ${message.pending ? 'opacity-70' : ''}`}>
-                                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                                    {formatMessageContent(message.content)}
-                                  </ReactMarkdown>
-                                </div>
-                              )}
-                              {message.citations && message.citations.length > 0 && !message.pending && (
-                                <div className="mt-3 pt-3 border-t border-gray-300 text-xs text-gray-500">
-                                  <p className="font-medium mb-1">Referências:</p>
-                                  <div className="flex flex-wrap gap-2">
-                                    {message.citations.map((citation) => (
-                                      <span key={citation.document_id + citation.label} className="px-2 py-1 bg-gray-200 rounded">
-                                        {citation.label}
-                                      </span>
+                          {message.citations && message.citations.length > 0 && !message.pending && (
+                            <div className="mt-3 pt-3 border-t border-slate-300 text-xs text-slate-500">
+                              <p className="font-medium mb-1">Referências:</p>
+                              <div className="flex flex-wrap gap-2">
+                                {message.citations.map((citation) => (
+                                  <span
+                                    key={citation.document_id + citation.label}
+                                    className="px-2 py-1 bg-slate-200 rounded-lg text-slate-700"
+                                  >
+                                    {citation.label}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {autoReview && !message.pending && (
+                            <div className="mt-3 rounded-2xl border border-amber-200 bg-white/80 p-3 text-xs text-slate-700">
+                              <div className="flex items-center justify-between font-semibold uppercase tracking-wide text-[11px]">
+                                <span>Revisão automática</span>
+                                <span className={autoReview.verdict === 'ok' ? 'text-emerald-600' : 'text-amber-700'}>
+                                  {autoReview.verdict === 'ok' ? 'Sem alertas' : 'Rever pontos'}
+                                </span>
+                              </div>
+                              {autoReview.summary && <p className="mt-2 text-slate-700">{autoReview.summary}</p>}
+                              {autoReview.missingInformation.length > 0 && (
+                                <div className="mt-2">
+                                  <p className="font-medium text-slate-800">Lacunas:</p>
+                                  <ul className="mt-1 list-disc pl-5 space-y-0.5">
+                                    {autoReview.missingInformation.map((item) => (
+                                      <li key={item}>{item}</li>
                                     ))}
-                                  </div>
+                                  </ul>
                                 </div>
                               )}
-                              {autoReview && !message.pending && (
-                                <div className="mt-3 rounded-2xl border border-amber-200 bg-white/80 p-3 text-xs text-gray-700">
-                                  <div className="flex items-center justify-between font-semibold uppercase tracking-wide text-[11px]">
-                                    <span>Revisão automática</span>
-                                    <span className={autoReview.verdict === 'ok' ? 'text-emerald-600' : 'text-amber-700'}>
-                                      {autoReview.verdict === 'ok' ? 'Sem alertas' : 'Rever pontos'}
-                                    </span>
-                                  </div>
-                                  {autoReview.summary && <p className="mt-2 text-gray-700">{autoReview.summary}</p>}
-                                  {autoReview.missingInformation.length > 0 && (
-                                    <div className="mt-2">
-                                      <p className="font-medium text-gray-800">Lacunas:</p>
-                                      <ul className="mt-1 list-disc pl-5 space-y-0.5">
-                                        {autoReview.missingInformation.map((item) => (
-                                          <li key={item}>{item}</li>
-                                        ))}
-                                      </ul>
-                                    </div>
-                                  )}
-                                  {autoReview.requiredCitations.length > 0 && (
-                                    <div className="mt-2">
-                                      <p className="font-medium text-gray-800">Citações obrigatórias:</p>
-                                      <ul className="mt-1 list-disc pl-5 space-y-0.5">
-                                        {autoReview.requiredCitations.map((item) => (
-                                          <li key={item}>{item}</li>
-                                        ))}
-                                      </ul>
-                                    </div>
-                                  )}
-                                  {autoReview.numericAlerts.length > 0 && (
-                                    <div className="mt-2">
-                                      <p className="font-medium text-gray-800">Números para conferir:</p>
-                                      <ul className="mt-1 list-disc pl-5 space-y-0.5">
-                                        {autoReview.numericAlerts.map((item) => (
-                                          <li key={item}>{item}</li>
-                                        ))}
-                                      </ul>
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                              {coverage && !message.pending && (
-                                <p className="mt-3 text-[11px] uppercase tracking-wide text-gray-500">
-                                  Cobertura automática: {coverage.retrieved} de {coverage.total ?? '?'} documentos por similaridade • {coverage.forced}{' '}
-                                  complementares forçados
-                                </p>
-                              )}
-                              {message.role === 'assistant' && !message.pending && (
-                                <div className="mt-4 rounded-2xl border border-gray-200 bg-white/80 p-3 text-xs text-gray-700">
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <span className="font-medium text-gray-900">Como foi esta resposta?</span>
-                                    {([
-                                      { value: 'useful', label: 'Útil' },
-                                      { value: 'incomplete', label: 'Incompleta' },
-                                      { value: 'incorrect', label: 'Incorreta' }
-                                    ] as { value: FeedbackRating; label: string }[]).map((option) => (
-                                      <button
-                                        key={option.value}
-                                        type="button"
-                                        onClick={() => handleFeedbackChoice(message.id, option.value)}
-                                        className={`rounded-full border px-3 py-1 transition text-xs ${
-                                          draft.rating === option.value
-                                            ? 'bg-gray-900 text-white border-gray-900'
-                                            : 'border-gray-300 text-gray-600 hover:border-gray-400'
-                                        }`}
-                                      >
-                                        {option.label}
-                                      </button>
+                              {autoReview.requiredCitations.length > 0 && (
+                                <div className="mt-2">
+                                  <p className="font-medium text-slate-800">Citações obrigatórias:</p>
+                                  <ul className="mt-1 list-disc pl-5 space-y-0.5">
+                                    {autoReview.requiredCitations.map((item) => (
+                                      <li key={item}>{item}</li>
                                     ))}
-                                  </div>
-                                  {draft.rating && (
-                                    <div className="mt-3 space-y-2">
-                                      <textarea
-                                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-xs focus:border-gray-500 focus:outline-none"
-                                        placeholder="Explique o que faltou (opcional)"
-                                        value={draft.notes}
-                                        onChange={(event) => handleFeedbackFieldChange(message.id, 'notes', event.target.value)}
-                                      />
-                                      <textarea
-                                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-xs focus:border-gray-500 focus:outline-none"
-                                        placeholder="Cole uma versão corrigida para reaproveitarmos (opcional)"
-                                        value={draft.revisedAnswer}
-                                        onChange={(event) => handleFeedbackFieldChange(message.id, 'revisedAnswer', event.target.value)}
-                                      />
-                                      <div className="flex items-center gap-3">
-                                        <button
-                                          type="button"
-                                          onClick={() => handleSubmitFeedback(message.id)}
-                                          disabled={draft.status === 'saving'}
-                                          className="rounded-full bg-gray-900 px-4 py-1 text-white text-xs font-semibold disabled:opacity-50"
-                                        >
-                                          {draft.status === 'saving' ? 'Enviando...' : 'Enviar feedback'}
-                                        </button>
-                                        {draft.status === 'sent' && <span className="text-emerald-600">Enviado ✓</span>}
-                                      </div>
-                                    </div>
-                                  )}
+                                  </ul>
+                                </div>
+                              )}
+                              {autoReview.numericAlerts.length > 0 && (
+                                <div className="mt-2">
+                                  <p className="font-medium text-slate-800">Números para conferir:</p>
+                                  <ul className="mt-1 list-disc pl-5 space-y-0.5">
+                                    {autoReview.numericAlerts.map((item) => (
+                                      <li key={item}>{item}</li>
+                                    ))}
+                                  </ul>
                                 </div>
                               )}
                             </div>
-                          </div>
-                          {message.role === 'user' && (
-                            <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gray-900 flex items-center justify-center text-xs font-semibold text-white order-3">
-                              V
+                          )}
+                          {coverage && !message.pending && (
+                            <p className="mt-3 text-[11px] uppercase tracking-wide text-slate-500">
+                              Cobertura automática: {coverage.retrieved} de {coverage.total ?? '?'} documentos por
+                              similaridade • {coverage.forced} complementares forçados
+                            </p>
+                          )}
+                          {message.role === 'assistant' && !message.pending && (
+                            <div className="mt-4 rounded-2xl border border-slate-200 bg-white/80 p-3 text-xs text-slate-700">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-medium text-slate-900">Como foi esta resposta?</span>
+                                {([
+                                  { value: 'useful', label: 'Útil' },
+                                  { value: 'incomplete', label: 'Incompleta' },
+                                  { value: 'incorrect', label: 'Incorreta' }
+                                ] as { value: FeedbackRating; label: string }[]).map((option) => (
+                                  <button
+                                    key={option.value}
+                                    type="button"
+                                    onClick={() => handleFeedbackChoice(message.id, option.value)}
+                                    className={`rounded-full border px-3 py-1 transition-all duration-200 text-xs ${
+                                      draft.rating === option.value
+                                        ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
+                                        : 'border-slate-300 text-slate-600 hover:border-slate-400 hover:bg-slate-50'
+                                    }`}
+                                  >
+                                    {option.label}
+                                  </button>
+                                ))}
+                              </div>
+                              {draft.rating && (
+                                <div className="mt-3 space-y-2">
+                                  <textarea
+                                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200/50 transition-all duration-200"
+                                    placeholder="Explique o que faltou (opcional)"
+                                    value={draft.notes}
+                                    onChange={(event) => handleFeedbackFieldChange(message.id, 'notes', event.target.value)}
+                                  />
+                                  <textarea
+                                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200/50 transition-all duration-200"
+                                    placeholder="Cole uma versão corrigida para reaproveitarmos (opcional)"
+                                    value={draft.revisedAnswer}
+                                    onChange={(event) =>
+                                      handleFeedbackFieldChange(message.id, 'revisedAnswer', event.target.value)
+                                    }
+                                  />
+                                  <div className="flex items-center gap-3">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSubmitFeedback(message.id)}
+                                      disabled={draft.status === 'saving'}
+                                      className="rounded-full bg-slate-900 px-4 py-1 text-white text-xs font-semibold disabled:opacity-50 transition-all duration-200 hover:shadow-md active:scale-[0.98]"
+                                    >
+                                      {draft.status === 'saving' ? 'Enviando...' : 'Enviar feedback'}
+                                    </button>
+                                    {draft.status === 'sent' && (
+                                      <span className="text-emerald-600 animate-in fade-in duration-200">Enviado ✓</span>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
-                      );
-                    })
-                  )}
-                </div>
+                      </div>
+                      {message.role === 'user' && (
+                        <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gradient-to-br from-slate-700 to-slate-900 flex items-center justify-center text-xs font-semibold text-white shadow-sm order-3">
+                          V
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
             </div>
+          </div>
 
-              {/* Input de mensagem */}
-              <div className="flex-shrink-0 border-t border-gray-200 bg-white p-4">
-                <form 
-                  className="max-w-3xl mx-auto flex gap-3" 
-                  onSubmit={handleSendMessage}
-                >
+          {/* Input de mensagem */}
+          <div className="flex-shrink-0 border-t border-slate-200/60 bg-white/80 backdrop-blur-sm p-4">
+            <form className="max-w-3xl mx-auto flex gap-3" onSubmit={handleSendMessage}>
               <input
                 type="text"
                 value={chatInput}
                 onChange={(event) => setChatInput(event.target.value)}
-                    placeholder="Mensagem..."
-                    className="flex-1 rounded-lg border border-gray-300 px-4 py-2.5 text-sm focus:border-gray-400 focus:outline-none focus:ring-1 focus:ring-gray-400"
-                    disabled={!selectedChatId || sendingMessage}
+                placeholder="Mensagem..."
+                className="flex-1 rounded-lg border border-slate-300 px-4 py-2.5 text-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200/50 transition-all duration-200"
+                disabled={!selectedChatId || sendingMessage}
               />
               <button
                 type="submit"
-                    disabled={!selectedChatId || sendingMessage || !chatInput.trim()}
-                    className="rounded-lg bg-gray-900 px-6 py-2.5 text-sm font-medium text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
+                disabled={!selectedChatId || sendingMessage || !chatInput.trim()}
+                className="rounded-lg bg-slate-900 px-6 py-2.5 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 transition-all duration-200 hover:shadow-md active:scale-[0.98]"
               >
                 {sendingMessage ? 'Enviando...' : 'Enviar'}
               </button>
             </form>
           </div>
-            </div>
-          </div>
-        </main>
-
-        {/* Sidebar Direita - Documentos (ocultável) */}
-        {showDocumentsPanel && (
-          <aside className="flex-shrink-0 w-80 border-l border-gray-200 bg-white overflow-y-auto">
-            <div className="p-4">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-sm font-semibold text-gray-900">Documentos</h2>
-                <button
-                  type="button"
-                  onClick={() => setShowDocumentsPanel(false)}
-                  className="text-xs text-gray-500 hover:text-gray-700"
-                  title="Ocultar"
-                >
-                  ×
-                </button>
-              </div>
-
-              {/* Upload de documentos */}
-              <div className="mb-6 p-4 border border-gray-200 rounded-lg bg-gray-50">
-                <h3 className="text-xs font-semibold text-gray-900 mb-3">Upload</h3>
-                <form onSubmit={handleUpload} className="space-y-3">
-                  <input
-                    type="text"
-                    name="title"
-                    placeholder="Título (opcional)"
-                    className="w-full rounded-lg border border-gray-200 px-3 py-2 text-xs focus:border-gray-400 focus:outline-none"
-                  />
-                  <input
-                    type="file"
-                    name="files"
-                    accept="application/pdf,image/png,image/jpeg"
-                    className="w-full text-xs"
-                    multiple
-                    required
-                  />
-                  <button
-                    type="submit"
-                    disabled={uploading}
-                    className="w-full rounded-lg bg-gray-900 px-3 py-2 text-xs font-medium text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {uploading ? 'Processando...' : 'Enviar'}
-                  </button>
-                </form>
-              </div>
-
-              {/* Lista de documentos */}
-              <div className="space-y-2">
-                {documents.map((document) => (
-                  <article 
-                    key={document.id} 
-                    className="rounded-lg border border-gray-200 p-3 hover:bg-gray-50 transition-colors"
-                  >
-                    <div className="flex items-start justify-between gap-2 mb-2">
-                      <div className="flex-1 min-w-0">
-                        <p className="text-xs font-medium text-gray-900 truncate">
-                          {document.title ?? document.original_filename}
-                        </p>
-                        <p className="text-xs text-gray-500 mt-0.5">
-                          {new Date(document.created_at).toLocaleDateString('pt-BR')}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-1.5 flex-shrink-0">
-                        <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${statusBadge(document.status)}`}>
-                          {statusLabel(document.status)}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteDocument(document.id)}
-                          disabled={deletingDocumentId === document.id}
-                          className="text-xs text-gray-400 hover:text-red-600 disabled:opacity-50"
-                          title="Excluir"
-                        >
-                          ×
-                        </button>
-                      </div>
-                    </div>
-                    {document.summary && (
-                      <div className="mt-2">
-                        <button
-                          type="button"
-                          onClick={() => toggleDocumentSummary(document.id)}
-                          className="text-xs text-gray-600 hover:text-gray-900 font-medium flex items-center gap-1 w-full text-left"
-                        >
-                          <span>{expandedSummaries[document.id] ? '▼' : '▶'}</span>
-                          <span>Resumo</span>
-                        </button>
-                        {expandedSummaries[document.id] && (
-                          <p className="mt-2 text-xs text-gray-600 leading-relaxed pl-4">
-                            {document.summary}
-                          </p>
-                        )}
-                      </div>
-                    )}
-                  </article>
-                ))}
-                {!documents.length && (
-                  <p className="text-xs text-gray-500 text-center py-4">Nenhum documento ainda</p>
-                )}
-              </div>
-            </div>
-          </aside>
-        )}
-
-        {/* Botão para mostrar sidebar de documentos quando oculta */}
-        {!showDocumentsPanel && (
-          <button
-            type="button"
-            onClick={() => setShowDocumentsPanel(true)}
-            className="fixed right-4 top-1/2 -translate-y-1/2 bg-gray-900 text-white rounded-l-lg px-2 py-4 text-xs hover:bg-gray-800 transition-colors z-10"
-            title="Mostrar documentos"
-          >
-            Doc
-          </button>
-        )}
+        </div>
       </div>
     </div>
   );
@@ -1032,10 +1116,10 @@ const markdownComponents = {
   h2: (props: ComponentPropsWithoutRef<'h2'>) => <h2 className="mt-4 mb-2 text-base font-semibold" {...props} />,
   h3: (props: ComponentPropsWithoutRef<'h3'>) => <h3 className="mt-4 mb-2 text-sm font-semibold" {...props} />,
   code: (props: ComponentPropsWithoutRef<'code'>) => (
-    <code className="bg-gray-200 px-1.5 py-0.5 rounded text-xs font-mono" {...props} />
+    <code className="bg-slate-200 px-1.5 py-0.5 rounded text-xs font-mono" {...props} />
   ),
   pre: (props: ComponentPropsWithoutRef<'pre'>) => (
-    <pre className="bg-gray-200 p-3 rounded-lg overflow-x-auto my-2 text-xs" {...props} />
+    <pre className="bg-slate-200 p-3 rounded-lg overflow-x-auto my-2 text-xs" {...props} />
   )
 };
 
@@ -1079,5 +1163,7 @@ function resolveCoverage(metadata: Record<string, unknown> | null) {
 
 function coerceStringArray(value: unknown) {
   if (!Array.isArray(value)) return [];
-  return value.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0).map((entry) => entry.trim());
+  return value
+    .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+    .map((entry) => entry.trim());
 }
