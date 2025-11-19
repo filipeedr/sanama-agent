@@ -88,7 +88,7 @@ export async function POST(request: Request, context: RouteParams) {
 
     const { data: inserted, error: insertError } = await supabase
       .from('chat_feedback')
-      .insert(payload)
+      .insert([payload])
       .select()
       .single<ChatFeedbackRow>();
 
