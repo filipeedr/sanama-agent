@@ -2,7 +2,12 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getServiceSupabase } from '@/lib/supabase';
 import { embedTexts } from '@/lib/embeddings';
-import type { ChatMessageRow, ChatRow, Database } from '@/types/supabase';
+import type {
+  ChatMessageRow,
+  ChatRow,
+  Database,
+  ChatFeedbackRow
+} from '@/types/supabase';
 
 const feedbackSchema = z.object({
   messageId: z.string().min(1),
@@ -66,24 +71,27 @@ export async function POST(request: Request, context: RouteParams) {
       .map((citation) => (typeof citation?.chunk_id === 'number' ? citation.chunk_id : undefined))
       .filter((value): value is number => typeof value === 'number');
 
+    const chatFeedbackTable: keyof Database['public']['Tables'] = 'chat_feedback';
+    const payload: Database['public']['Tables']['chat_feedback']['Insert'] = {
+      chat_id: chatId,
+      notebook_id: chat.notebook_id,
+      message_id: message.id,
+      user_message_id: userMessage.id,
+      rating: parsed.data.rating,
+      question: userMessage.content,
+      answer: message.content,
+      notes: parsed.data.notes ?? null,
+      revised_answer: parsed.data.revisedAnswer ?? null,
+      applied_chunk_ids: appliedChunkIds.length ? appliedChunkIds : null,
+      question_embedding: questionEmbedding,
+      metadata: { source: 'ui' }
+    };
+
     const { data: inserted, error: insertError } = await supabase
-      .from('chat_feedback')
-      .insert<Database['public']['Tables']['chat_feedback']['Insert']>({
-        chat_id: chatId,
-        notebook_id: chat.notebook_id,
-        message_id: message.id,
-        user_message_id: userMessage.id,
-        rating: parsed.data.rating,
-        question: userMessage.content,
-        answer: message.content,
-        notes: parsed.data.notes ?? null,
-        revised_answer: parsed.data.revisedAnswer ?? null,
-        applied_chunk_ids: appliedChunkIds.length ? appliedChunkIds : null,
-        question_embedding: questionEmbedding,
-        metadata: { source: 'ui' }
-      })
+      .from(chatFeedbackTable)
+      .insert(payload)
       .select()
-      .single();
+      .single<ChatFeedbackRow>();
 
     if (insertError || !inserted) {
       throw new Error(insertError?.message ?? 'Falha ao salvar feedback');
