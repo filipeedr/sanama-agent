@@ -59,9 +59,11 @@ export async function POST(request: Request, context: RouteParams) {
     }
 
     const [questionEmbedding] = await embedTexts([userMessage.content]);
-    const citations = Array.isArray(message.citations) ? message.citations : [];
+    const citations = Array.isArray(message.citations)
+      ? (message.citations as { chunk_id?: number | null }[])
+      : [];
     const appliedChunkIds = citations
-      .map((citation: { chunk_id?: number }) => citation?.chunk_id)
+      .map((citation) => (typeof citation?.chunk_id === 'number' ? citation.chunk_id : undefined))
       .filter((value): value is number => typeof value === 'number');
 
     const { data: inserted, error: insertError } = await supabase
