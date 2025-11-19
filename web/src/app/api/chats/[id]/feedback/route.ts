@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getServiceSupabase } from '@/lib/supabase';
 import { embedTexts } from '@/lib/embeddings';
+import type { ChatRow } from '@/types/supabase';
 
 const feedbackSchema = z.object({
   messageId: z.string().min(1),
@@ -24,7 +25,11 @@ export async function POST(request: Request, context: RouteParams) {
       return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
     }
 
-    const { data: chat } = await supabase.from('chats').select('id, notebook_id').eq('id', chatId).single();
+    const { data: chat } = await supabase
+      .from('chats')
+      .select('id, notebook_id')
+      .eq('id', chatId)
+      .single<Pick<ChatRow, 'id' | 'notebook_id'>>();
     if (!chat?.notebook_id) {
       return NextResponse.json({ error: 'Chat não encontrado.' }, { status: 404 });
     }
