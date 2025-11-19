@@ -75,8 +75,6 @@ export async function POST(request: Request, context: RouteParams) {
       citations: ragResult.citations,
       metadata: {
         strategy: 'rag',
-        auto_review: ragResult.review,
-        coverage: ragResult.coverage,
         feedback_context: ragResult.feedbackContext,
         prompt_version: 'rag-v2-feedback-loop'
       }

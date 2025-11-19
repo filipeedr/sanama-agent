@@ -28,12 +28,18 @@ SUPABASE_SERVICE_ROLE_KEY=
 SUPABASE_STORAGE_BUCKET=documents
 OPENAI_API_KEY=
 OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_MODEL_CHAT=gpt-4o
+OPENAI_MODEL_CHAT=gpt-4.1-mini
 OPENAI_MODEL_EMBEDDING=text-embedding-3-small
 EMBEDDING_VECTOR_SIZE=1536
 CHAT_MAX_OUTPUT_TOKENS=2200
 SUMMARY_MAX_OUTPUT_TOKENS=800
 RAG_MATCH_COUNT=12
+ENABLE_OCR_CORRECTION=true
+OCR_CORRECTION_MAX_TOKENS=6000
+OCR_CORRECTION_BATCH_SIZE=3
+ENABLE_STRUCTURED_BLOCK_ENRICHMENT=true
+STRUCTURED_BLOCK_MAX_TOKENS=1800
+STRUCTURED_BLOCK_CONCURRENCY=2
 ```
 
 > As chaves da OpenAI são opcionais para carregar a UI/listagens, mas **obrigatórias** para processar documentos (embeddings/resumos) e usar o chat. Se deixar `OPENAI_API_KEY` em branco, o upload retornará erro informando que a chave é necessária.
@@ -41,6 +47,8 @@ RAG_MATCH_COUNT=12
 > `EMBEDDING_VECTOR_SIZE` precisa combinar com a definição do campo `document_chunks.embedding`. O schema padrão usa `vector(1536)` (compatível com `text-embedding-3-small`). Se quiser usar um modelo com mais dimensões, ajuste esse valor **e** atualize o schema do Supabase (lembrando que índices `ivfflat` do pgvector aceitam no máximo 2000 dimensões).
 
 > O projeto roda em modo single-tenant: não há autenticação Supabase. Todas as tabelas ficam acessíveis apenas pelo service role configurado no backend.
+
+> `ENABLE_OCR_CORRECTION` e `ENABLE_STRUCTURED_BLOCK_ENRICHMENT` controlam as etapas adicionais introduzidas para correção de OCR e enriquecimento de tabelas/gráficos. Se quiser economizar tokens, basta colocar `false` nessas flags. Os limites (`*_MAX_TOKENS`, `*_BATCH_SIZE`, `STRUCTURED_BLOCK_CONCURRENCY`) ajudam a ajustar custo/tempo conforme o tamanho dos documentos.
 
 2. Instale dependências:
 
@@ -60,10 +68,10 @@ A aplicação estará em `http://localhost:3000`.
 ## Fluxo principal
 
 1. **Upload** — selecione PDF/JPG/PNG. O arquivo é enviado ao storage do Supabase e o pipeline é disparado.
-2. **Pipeline** — verifica se o arquivo já contém texto (PDF via `pdfjs-dist` ou texto plano). Se não houver, renderiza cada página (PDF → bitmap com `pdfjs-dist` + `@napi-rs/canvas`) e dispara o OCR (Tesseract usando os `.traineddata` locais em `tessdata`). Depois roda o chunking semântico (~300 tokens, preserva cabeçalhos/listas/tabelas), gera embeddings (OpenAI), cria um índice semântico (keywords, valores, datas) e grava tudo no pgvector/`document_chunks`, atualiza o registro em `documents` com metadados inteligentes e notifica o progresso via `processing_jobs`.
+2. **Pipeline** — verifica se o arquivo já contém texto (PDF via `pdfjs-dist` ou texto plano). Se não houver, renderiza cada página (PDF → bitmap com `pdfjs-dist` + `@napi-rs/canvas`) e dispara o OCR (Tesseract usando os `.traineddata` locais em `tessdata`). Quando o texto vem do OCR, ele passa por uma etapa opcional de correção usando o LLM (paginação em lotes para evitar exceder o limite de tokens). Em seguida o chunking semântico respeita blocos inteiros de tabelas/quadro/gráficos, gera versões textual + JSON resumido para esses blocos, produz embeddings (OpenAI), cria um índice semântico (keywords, valores, datas) e grava tudo no pgvector/`document_chunks`, atualiza o registro em `documents` com metadados inteligentes e notifica o progresso via `processing_jobs`.
    - Ordem: verificação de texto → OCR (quando necessário) → extração de texto consolidado → chunking semântico + índices → embeddings → persistência no pgvector → atualização do documento → UI recebe status via `processing_jobs` + campo `status`.
 3. **Notebooks** — agrupe documentos e crie quantos notebooks quiser, adicionando documentos existentes.
-4. **Chat** — cada notebook pode ter múltiplas conversas. A API `runRagChat` consulta `match_chunks` (limiar 0.2, até 12 chunks), reranqueia trechos com heurísticas, hidrata metadados/vizinhos, FORÇA cobertura de todos os documentos do notebook (busca chunks representativos quando algo ficou de fora), injeta resumos/document inventory + correções previamente fornecidas por humanos e envia o prompt detalhado ao modelo (`gpt-4o`, respostas até ~2.2k tokens). Depois a resposta passa por uma revisão automática (modelo auxiliar em JSON) que aponta lacunas, citações obrigatórias e números a conferir.
+4. **Chat** — cada notebook pode ter múltiplas conversas. A API `runRagChat` consulta `match_chunks` (limiar 0.2, até 12 chunks), reranqueia trechos com heurísticas, hidrata metadados/vizinhos, FORÇA cobertura de todos os documentos do notebook (busca chunks representativos quando algo ficou de fora), injeta resumos/document inventory + correções previamente fornecidas por humanos e envia o prompt detalhado ao modelo (`gpt-4.1-mini`, respostas até ~2.2k tokens). Depois a resposta passa por uma revisão automática (modelo auxiliar em JSON) que aponta lacunas, citações obrigatórias e números a conferir.
 5. **Citações** — as referências retornam no payload `citations` da mensagem, exibidas na UI.
 6. **Feedback** — a UI expõe botões “Útil / Incompleta / Incorreta”, captura notas e versões corrigidas e envia para `/api/chats/[id]/feedback`. Esses pares pergunta→resposta alimentam o dataset `chat_feedback` (com embeddings próprios), permitindo reuso como contexto adicional e facilitando extração para futuros fine-tunes.
 

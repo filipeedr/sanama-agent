@@ -5,12 +5,13 @@ import path from 'node:path';
 import type { PDFDocumentProxy } from 'pdfjs-dist/types/src/display/api';
 import type { DocumentsRow, Json } from '@/types/supabase';
 
-import { chunkText, estimateTokenCount } from './chunking';
+import { chunkText, estimateTokenCount, type Chunk } from './chunking';
 import { embedTexts } from './embeddings';
 import { getServiceSupabase } from './supabase';
 import { downloadDocumentBinary } from './storage';
-import { generateSummaryFromText } from './llm';
+import { correctOcrTextWithLLM, generateSummaryFromText, normalizeStructuredBlockWithLLM } from './llm';
 import { buildSemanticAttributes } from './semantic-index';
+import { getServerEnv } from './env';
 
 interface ExtractionResult {
   text: string;
@@ -42,6 +43,7 @@ function getTesseractOptions() {
 
 type Stage =
   | 'ocr'
+  | 'ocr_correction'
   | 'text_extraction'
   | 'chunking'
   | 'embedding'
@@ -51,6 +53,7 @@ type Stage =
 
 export async function processDocument(documentId: string, providedBinary?: Buffer, providedMimeType?: string) {
   const supabase = getServiceSupabase();
+  const env = getServerEnv();
   const { data: document, error } = await supabase
     .from('documents')
     .select('*')
@@ -82,7 +85,23 @@ export async function processDocument(documentId: string, providedBinary?: Buffe
       throw new Error('Não foi possível extrair texto do documento (nem com OCR).');
     }
 
-    const chunks = await withStage(document.id, 'chunking', async () => chunkText(extraction.text));
+    const cameFromOcr = !hasExtractedText(initialExtraction);
+    let finalText = extraction.text;
+    if (cameFromOcr) {
+      finalText = await withStage(document.id, 'ocr_correction', async () =>
+        correctOcrTextWithLLM(extraction.text, document.title ?? document.original_filename ?? undefined)
+      );
+    } else {
+      await recordStage(document.id, 'ocr_correction', 'completed', { skipped: true, reason: 'text_from_pdf' });
+    }
+
+    const chunks = await withStage(document.id, 'chunking', async () => {
+      const baseChunks = chunkText(finalText);
+      return enrichStructuredChunks(baseChunks, {
+        documentTitle: document.title ?? document.original_filename,
+        env
+      });
+    });
     const [chunkAttributes, docSemanticAttributes] = await Promise.all([
       Promise.all(
         chunks.map((chunk) =>
@@ -93,7 +112,7 @@ export async function processDocument(documentId: string, providedBinary?: Buffe
           )
         )
       ),
-      buildSemanticAttributes(extraction.text, { title: document.title ?? document.original_filename }, { useModel: true })
+      buildSemanticAttributes(finalText, { title: document.title ?? document.original_filename }, { useModel: true })
     ]);
     const embeddings = await withStage(document.id, 'embedding', async () => embedTexts(chunks.map((c) => c.content)));
 
@@ -116,7 +135,7 @@ export async function processDocument(documentId: string, providedBinary?: Buffe
           embedding: embeddings[index],
           page_number: null,
           section: null,
-          metadata: { source: 'pipeline', semantic: chunkAttributes[index] }
+          metadata: buildChunkMetadata(chunk, chunkAttributes[index])
         }))
       );
       if (insertError) {
@@ -126,19 +145,25 @@ export async function processDocument(documentId: string, providedBinary?: Buffe
 
     const summary = chunks.length
       ? await withStage(document.id, 'summary', async () =>
-          generateSummaryFromText(document.title ?? document.original_filename, extraction.text)
+          generateSummaryFromText(document.title ?? document.original_filename, finalText)
         )
       : null;
 
     const totalTokens = chunks.reduce((acc, chunk) => acc + chunk.tokenCount, 0);
+    const structuredOverview = buildStructuredOverview(chunks);
+
+    const metadataUpdates: Record<string, unknown> = { semantic: docSemanticAttributes };
+    if (structuredOverview.length) {
+      metadataUpdates.structured_overview = structuredOverview;
+    }
 
     await updateDocument(document.id, {
       status: 'ready',
       summary,
       num_pages: extraction.numPages,
       tokens_estimated: totalTokens,
-      language: detectLanguage(extraction.text),
-      metadata: mergeDocumentMetadata(document.metadata, { semantic: docSemanticAttributes })
+      language: detectLanguage(finalText),
+      metadata: mergeDocumentMetadata(document.metadata, metadataUpdates)
     });
 
     await recordStage(document.id, 'completed', 'completed', { chunkCount: chunks.length });
@@ -228,6 +253,96 @@ function detectLanguage(text: string): string {
 function mergeDocumentMetadata(existing: DocumentsRow['metadata'], updates: Record<string, unknown>): Json {
   const base = (existing && typeof existing === 'object' ? existing : {}) as Record<string, unknown>;
   return { ...base, ...updates } as Json;
+}
+
+async function enrichStructuredChunks(
+  chunks: Chunk[],
+  options: { documentTitle?: string | null; env: ReturnType<typeof getServerEnv> }
+) {
+  if (!options.env.ENABLE_STRUCTURED_BLOCK_ENRICHMENT) {
+    return chunks;
+  }
+  const structuredTargets = chunks.filter(
+    (chunk) => chunk.blockType === 'table' || chunk.blockType === 'graphic'
+  );
+  if (!structuredTargets.length) {
+    return chunks;
+  }
+
+  const concurrency = Math.max(1, options.env.STRUCTURED_BLOCK_CONCURRENCY);
+  for (let index = 0; index < structuredTargets.length; index += concurrency) {
+    const batch = structuredTargets.slice(index, index + concurrency);
+    await Promise.all(
+      batch.map(async (chunk) => {
+        try {
+          const result = await normalizeStructuredBlockWithLLM({
+            text: chunk.sourceText,
+            type: chunk.blockType === 'table' ? 'table' : 'graphic',
+            documentTitle: options.documentTitle ?? undefined,
+            maxOutputTokens: options.env.STRUCTURED_BLOCK_MAX_TOKENS
+          });
+          if (!result) {
+            return;
+          }
+          const combinedText = [result.summary, result.normalizedText]
+            .filter((value): value is string => Boolean(value && value.trim().length))
+            .join('\n\n')
+            .trim();
+          if (combinedText) {
+            chunk.content = combinedText;
+            chunk.tokenCount = estimateTokenCount(chunk.content);
+          }
+          chunk.structuredData = {
+            type: chunk.blockType === 'table' ? 'table' : 'graphic',
+            summary: result.summary ?? null,
+            normalizedText: result.normalizedText ?? null,
+            data: result.structuredJson ?? null,
+            raw: chunk.sourceText
+          };
+        } catch (error) {
+          console.warn('[pipeline] Falha ao enriquecer bloco estruturado', error);
+        }
+      })
+    );
+  }
+
+  return chunks;
+}
+
+function buildChunkMetadata(chunk: Chunk, semanticAttributes: unknown) {
+  const structuredPayload = chunk.structuredData
+    ? {
+        type: chunk.structuredData.type,
+        summary: chunk.structuredData.summary ?? null,
+        normalized_text: chunk.structuredData.normalizedText ?? null,
+        data: chunk.structuredData.data ?? null,
+        raw_excerpt: chunk.structuredData.raw ? chunk.structuredData.raw.slice(0, 1800) : null
+      }
+    : null;
+
+  const baseMetadata: Record<string, unknown> = {
+    source: 'pipeline',
+    block_type: chunk.blockType,
+    semantic: semanticAttributes
+  };
+
+  if (structuredPayload) {
+    baseMetadata.structured = structuredPayload;
+  } else if (chunk.sourceText) {
+    baseMetadata.raw_excerpt = chunk.sourceText.slice(0, 800);
+  }
+
+  return baseMetadata;
+}
+
+function buildStructuredOverview(chunks: Chunk[]) {
+  return chunks
+    .filter((chunk) => chunk.structuredData)
+    .map((chunk) => ({
+      chunk_index: chunk.chunkIndex,
+      type: chunk.blockType,
+      summary: chunk.structuredData?.summary ?? null
+    }));
 }
 
 export async function regenerateDocument(document: DocumentsRow) {

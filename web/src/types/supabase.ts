@@ -118,6 +118,7 @@ export interface ProcessingJobRow {
   stage:
     | 'upload'
     | 'ocr'
+    | 'ocr_correction'
     | 'text_extraction'
     | 'chunking'
     | 'embedding'

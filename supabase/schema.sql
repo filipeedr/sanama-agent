@@ -155,7 +155,7 @@ create index if not exists rag_turn_telemetry_chat_idx on public.rag_turn_teleme
 create table if not exists public.processing_jobs (
   id uuid primary key default uuid_generate_v4(),
   document_id uuid not null references public.documents(id) on delete cascade,
-  stage text not null check (stage in ('upload','ocr','text_extraction','chunking','embedding','summary','completed','failed')),
+  stage text not null check (stage in ('upload','ocr','ocr_correction','text_extraction','chunking','embedding','summary','completed','failed')),
   status text not null default 'pending' check (status in ('pending','running','completed','failed')),
   payload jsonb default '{}'::jsonb,
   error_message text,

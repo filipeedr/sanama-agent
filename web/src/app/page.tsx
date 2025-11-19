@@ -2,7 +2,7 @@
 
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { type ComponentPropsWithoutRef, type FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import { type ComponentPropsWithoutRef, type FormEvent, useCallback, useEffect, useState } from 'react';
 
 type IdleDeadline = {
   didTimeout: boolean;
@@ -93,7 +93,6 @@ export default function Home() {
   const [deletingDocumentId, setDeletingDocumentId] = useState<string | null>(null);
   const [deletingNotebookId, setDeletingNotebookId] = useState<string | null>(null);
   const [deletingChatId, setDeletingChatId] = useState<string | null>(null);
-  const [expandedSummaries, setExpandedSummaries] = useState<Record<string, boolean>>({});
   const [feedbackDrafts, setFeedbackDrafts] = useState<Record<string, FeedbackDraft>>({});
   const [showCreateModal, setShowCreateModal] = useState(false);
   const emptyDraft: FeedbackDraft = { rating: null, notes: '', revisedAnswer: '', status: 'idle' };
@@ -296,13 +295,6 @@ export default function Home() {
       setDeletingDocumentId(null);
       setTimeout(() => setStatusMessage(null), 4000);
     }
-  };
-
-  const toggleDocumentSummary = (documentId: string) => {
-    setExpandedSummaries((previous) => ({
-      ...previous,
-      [documentId]: !previous[documentId]
-    }));
   };
 
   const handleDeleteNotebook = async (notebookId: string) => {
@@ -585,23 +577,6 @@ export default function Home() {
                       </button>
                     </div>
                   </div>
-                  {document.summary && (
-                    <div className="mt-2">
-                      <button
-                        type="button"
-                        onClick={() => toggleDocumentSummary(document.id)}
-                        className="text-xs text-slate-600 hover:text-slate-900 font-medium flex items-center gap-1 w-full text-left transition-colors duration-200"
-                      >
-                        <span className="transition-transform duration-200">{expandedSummaries[document.id] ? '▼' : '▶'}</span>
-                        <span>Resumo</span>
-                      </button>
-                      {expandedSummaries[document.id] && (
-                        <p className="mt-2 text-xs text-slate-600 leading-relaxed pl-4 animate-in fade-in slide-in-from-top-2 duration-200">
-                          {document.summary}
-                        </p>
-                      )}
-                    </div>
-                  )}
                 </article>
               ))}
               {!documents.length && (
@@ -889,8 +864,6 @@ export default function Home() {
                 </div>
               ) : (
                 messages.map((message) => {
-                  const autoReview = resolveAutoReview(message.metadata ?? null);
-                  const coverage = resolveCoverage(message.metadata ?? null);
                   const draft = getFeedbackDraft(message.id);
                   return (
                     <div
@@ -921,68 +894,6 @@ export default function Home() {
                                 {formatMessageContent(message.content)}
                               </ReactMarkdown>
                             </div>
-                          )}
-                          {message.citations && message.citations.length > 0 && !message.pending && (
-                            <div className="mt-3 pt-3 border-t border-slate-300 text-xs text-slate-500">
-                              <p className="font-medium mb-1">Referências:</p>
-                              <div className="flex flex-wrap gap-2">
-                                {message.citations.map((citation) => (
-                                  <span
-                                    key={citation.document_id + citation.label}
-                                    className="px-2 py-1 bg-slate-200 rounded-lg text-slate-700"
-                                  >
-                                    {citation.label}
-                                  </span>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                          {autoReview && !message.pending && (
-                            <div className="mt-3 rounded-2xl border border-amber-200 bg-white/80 p-3 text-xs text-slate-700">
-                              <div className="flex items-center justify-between font-semibold uppercase tracking-wide text-[11px]">
-                                <span>Revisão automática</span>
-                                <span className={autoReview.verdict === 'ok' ? 'text-emerald-600' : 'text-amber-700'}>
-                                  {autoReview.verdict === 'ok' ? 'Sem alertas' : 'Rever pontos'}
-                                </span>
-                              </div>
-                              {autoReview.summary && <p className="mt-2 text-slate-700">{autoReview.summary}</p>}
-                              {autoReview.missingInformation.length > 0 && (
-                                <div className="mt-2">
-                                  <p className="font-medium text-slate-800">Lacunas:</p>
-                                  <ul className="mt-1 list-disc pl-5 space-y-0.5">
-                                    {autoReview.missingInformation.map((item) => (
-                                      <li key={item}>{item}</li>
-                                    ))}
-                                  </ul>
-                                </div>
-                              )}
-                              {autoReview.requiredCitations.length > 0 && (
-                                <div className="mt-2">
-                                  <p className="font-medium text-slate-800">Citações obrigatórias:</p>
-                                  <ul className="mt-1 list-disc pl-5 space-y-0.5">
-                                    {autoReview.requiredCitations.map((item) => (
-                                      <li key={item}>{item}</li>
-                                    ))}
-                                  </ul>
-                                </div>
-                              )}
-                              {autoReview.numericAlerts.length > 0 && (
-                                <div className="mt-2">
-                                  <p className="font-medium text-slate-800">Números para conferir:</p>
-                                  <ul className="mt-1 list-disc pl-5 space-y-0.5">
-                                    {autoReview.numericAlerts.map((item) => (
-                                      <li key={item}>{item}</li>
-                                    ))}
-                                  </ul>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                          {coverage && !message.pending && (
-                            <p className="mt-3 text-[11px] uppercase tracking-wide text-slate-500">
-                              Cobertura automática: {coverage.retrieved} de {coverage.total ?? '?'} documentos por
-                              similaridade • {coverage.forced} complementares forçados
-                            </p>
                           )}
                           {message.role === 'assistant' && !message.pending && (
                             <div className="mt-4 rounded-2xl border border-slate-200 bg-white/80 p-3 text-xs text-slate-700">
@@ -1126,44 +1037,4 @@ const markdownComponents = {
 function formatMessageContent(content: string) {
   if (!content) return '';
   return content.replace(/\n{2,}/g, '\n\n').trim();
-}
-
-type AutoReviewDisplay = {
-  verdict: 'ok' | 'needs_review';
-  summary: string;
-  missingInformation: string[];
-  requiredCitations: string[];
-  numericAlerts: string[];
-};
-
-function resolveAutoReview(metadata: Record<string, unknown> | null): AutoReviewDisplay | null {
-  if (!metadata || typeof metadata !== 'object') return null;
-  const raw = (metadata as { auto_review?: unknown }).auto_review;
-  if (!raw || typeof raw !== 'object') return null;
-  const payload = raw as Record<string, unknown>;
-  return {
-    verdict: payload.verdict === 'needs_review' ? 'needs_review' : 'ok',
-    summary: typeof payload.summary === 'string' ? payload.summary : '',
-    missingInformation: coerceStringArray(payload.missingInformation ?? payload.missing_information),
-    requiredCitations: coerceStringArray(payload.requiredCitations ?? payload.required_citations),
-    numericAlerts: coerceStringArray(payload.numericAlerts ?? payload.numeric_alerts)
-  };
-}
-
-function resolveCoverage(metadata: Record<string, unknown> | null) {
-  if (!metadata || typeof metadata !== 'object') return null;
-  const raw = (metadata as { coverage?: unknown }).coverage;
-  if (!raw || typeof raw !== 'object') return null;
-  const payload = raw as Record<string, unknown>;
-  const total = typeof payload.totalDocuments === 'number' ? payload.totalDocuments : null;
-  const retrieved = Array.isArray(payload.retrievedDocuments) ? payload.retrievedDocuments.length : 0;
-  const forced = Array.isArray(payload.forcedDocuments) ? payload.forcedDocuments.length : 0;
-  return { total, retrieved, forced };
-}
-
-function coerceStringArray(value: unknown) {
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
-    .map((entry) => entry.trim());
 }

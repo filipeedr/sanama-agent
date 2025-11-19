@@ -19,23 +19,26 @@ interface DocumentCoverage {
   forcedDocuments: string[];
 }
 
-interface AutoReview {
-  verdict: 'ok' | 'needs_review';
-  summary: string;
-  requiredCitations: string[];
-  missingInformation: string[];
-  numericAlerts: string[];
-}
-
 export interface ChatTurnResult {
   answer: string;
   citations: Citation[];
-  review: AutoReview | null;
   coverage: DocumentCoverage;
   feedbackContext: FeedbackContextItem[];
 }
 
+type ConversationMessage = {
+  role: 'user' | 'assistant';
+  content: string;
+};
+
+type RawChatMessageRow = {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string;
+};
+
 const PROMPT_VERSION = 'rag-v2-feedback-loop';
+const MAX_HISTORY_MESSAGES = 40;
+const MAX_HISTORY_CHARACTERS = 12_000;
 
 export async function runRagChat(chatId: string, userMessage: string): Promise<ChatTurnResult> {
   const supabase = getServiceSupabase();
@@ -54,6 +57,15 @@ export async function runRagChat(chatId: string, userMessage: string): Promise<C
     throw new Error('Chat sem notebook vinculado.');
   }
 
+  const rawHistory = await fetchConversationHistory(supabase, chat.id);
+  const conversationHistory = limitConversationHistory(rawHistory);
+  const conversationBlock = buildConversationHistoryBlock(conversationHistory);
+  const contextualizedQuestion =
+    conversationHistory.length > 1
+      ? await rewriteQuestionWithHistory(conversationHistory, userMessage)
+      : null;
+  const effectiveQuestion = contextualizedQuestion || userMessage;
+
   const { data: notebookDocs, error: notebookDocsError } = await supabase
     .from('notebook_documents')
     .select('document_id, added_at')
@@ -70,7 +82,7 @@ export async function runRagChat(chatId: string, userMessage: string): Promise<C
   const documentsMap = await fetchDocumentsInfo(supabase, documentIds);
   const documentInventory = buildDocumentInventory(documentIds, documentsMap);
 
-  const [queryEmbedding] = await embedTexts([userMessage]);
+  const [queryEmbedding] = await embedTexts([effectiveQuestion]);
   const { data: matches, error } = await supabase.rpc('match_chunks', {
     in_notebook_id: chat.notebook_id,
     query_embedding: queryEmbedding,
@@ -82,7 +94,7 @@ export async function runRagChat(chatId: string, userMessage: string): Promise<C
     throw new Error(`Erro ao buscar contexto: ${error.message}`);
   }
 
-  const rerankedMatches = rerankMatches(matches ?? [], userMessage).slice(0, env.RAG_MATCH_COUNT);
+  const rerankedMatches = rerankMatches(matches ?? [], effectiveQuestion).slice(0, env.RAG_MATCH_COUNT);
   const hydrated = await hydrateMatches(supabase, rerankedMatches);
   const coverageResult = await ensureDocumentCoverage(supabase, documentIds, hydrated);
   const combinedMatches = [...hydrated, ...coverageResult.forcedMatches];
@@ -92,7 +104,7 @@ export async function runRagChat(chatId: string, userMessage: string): Promise<C
     .map((match, index) => buildContextBlock(match, index, documentsMap, docSummariesUsed))
     .join('\n\n');
 
-  const feedbackContext = await fetchFeedbackContext(chat.notebook_id, userMessage, { limit: 3 });
+  const feedbackContext = await fetchFeedbackContext(chat.notebook_id, effectiveQuestion, { limit: 3 });
   const feedbackSection = buildFeedbackSection(feedbackContext);
 
   const [assistantResponseRaw] = await callChatModel(
@@ -102,13 +114,19 @@ export async function runRagChat(chatId: string, userMessage: string): Promise<C
         content:
           'Você é um especialista em contratos jurídicos com acesso a todos os documentos listados no inventário. ' +
           'Responda SEMPRE em Português Brasileiro com foco no que foi perguntado, citando apenas as partes relevantes dos documentos. ' +
-          'Organize a resposta em até 4 seções numeradas ou parágrafos concisos, cite valores/datas/percentuais explicitamente ' +
-          'e associe toda afirmação a uma fonte no formato [Fonte X]. Se a informação não existir, explique o que foi verificado e indique a lacuna.'
+          'Organize a resposta em parágrafos concisos (sem enumerar) e cite valores/datas/percentuais explicitamente. ' +
+          'Se a informação não existir, explique o que foi verificado e indique a lacuna.'
       },
       {
         role: 'user',
         content: [
-          `Pergunta: ${userMessage}`,
+          conversationBlock
+            ? `Histórico da conversa (do mais antigo para o mais recente):\n${conversationBlock}`
+            : null,
+          `Pergunta atual do usuário: ${userMessage}`,
+          contextualizedQuestion && contextualizedQuestion !== userMessage
+            ? `Pergunta interpretada para consulta aos documentos: ${contextualizedQuestion}`
+            : null,
           `Inventário completo de documentos para consulta obrigatória:\n${documentInventory}`,
           `Contexto consolidado (trechos + resumos dos chunks e vizinhos):\n${contextSections || 'Sem contexto disponível'}`,
           feedbackSection ? `Correções aprendidas com usuários (use como referência adicional):\n${feedbackSection}` : null
@@ -120,15 +138,9 @@ export async function runRagChat(chatId: string, userMessage: string): Promise<C
     { maxOutputTokens: env.CHAT_MAX_OUTPUT_TOKENS, temperature: 0.25 }
   );
 
-  const review = await runAutoReview(userMessage, assistantResponseRaw, documentInventory, contextSections);
-  const finalAnswer = appendAutoReviewNote(assistantResponseRaw, review);
+  const finalAnswer = assistantResponseRaw;
 
-  const citations: Citation[] = combinedMatches.map((match, index) => ({
-    chunk_id: match.chunk_id,
-    document_id: match.document_id,
-    similarity: match.similarity,
-    label: `Fonte ${index + 1}`
-  }));
+  const citations: Citation[] = [];
 
   const coverage: DocumentCoverage = {
     totalDocuments: documentIds.length,
@@ -139,8 +151,8 @@ export async function runRagChat(chatId: string, userMessage: string): Promise<C
   await recordChunkSignals({
     notebookId: chat.notebook_id,
     chunkIds: hydrated.map((match) => match.chunk_id),
-    question: userMessage,
-    keywords: extractKeywords(userMessage)
+    question: effectiveQuestion,
+    keywords: extractKeywords(effectiveQuestion)
   });
 
   await recordTurnTelemetry({
@@ -156,12 +168,12 @@ export async function runRagChat(chatId: string, userMessage: string): Promise<C
       origin: match.origin ?? 'retrieved'
     })),
     coverage,
-    autoReview: review,
+    autoReview: null,
     feedbackContext,
     promptVersion: PROMPT_VERSION
   });
 
-  return { answer: finalAnswer, citations, review, coverage, feedbackContext };
+  return { answer: finalAnswer, citations, coverage, feedbackContext };
 }
 
 type MatchRow = {
@@ -345,6 +357,7 @@ function buildContextBlock(
 
   const docSemantic = extractSemanticPayload(info?.metadata);
   const chunkSemantic = extractSemanticPayload(match.metadata);
+  const structuredPayload = extractStructuredPayload(match.metadata);
   const neighborsLine =
     match.neighbors.length > 0
       ? `Trechos relacionados: ${match.neighbors
@@ -359,6 +372,15 @@ function buildContextBlock(
     chunkSemantic?.clauses?.length ? `Cláusulas: ${chunkSemantic.clauses.slice(0, 4).join(', ')}` : '',
     chunkSemantic?.keywords?.length ? `Palavras-chave: ${chunkSemantic.keywords.slice(0, 6).join(', ')}` : ''
   ].filter(Boolean);
+  const structuredLines = structuredPayload
+    ? [
+        structuredPayload.summary ? `Resumo tabular/gráfico: ${structuredPayload.summary}` : '',
+        structuredPayload.normalized_text
+          ? `Estrutura interpretada: ${structuredPayload.normalized_text}`
+          : '',
+        structuredPayload.data ? `Dados principais: ${formatStructuredDataPreview(structuredPayload.data)}` : ''
+      ].filter(Boolean)
+    : [];
 
   const docSemanticLine = docSemantic?.summary ? `Insight geral do documento: ${docSemantic.summary}` : '';
 
@@ -367,6 +389,7 @@ function buildContextBlock(
     docSummaryLine,
     docSemanticLine,
     ...semanticLines,
+    ...structuredLines,
     `Trecho principal:\n${match.content}`,
     neighborsLine
   ]
@@ -385,6 +408,31 @@ function extractSemanticPayload(metadata: Json | null | undefined) {
     dates?: string[];
     clauses?: string[];
   } | null;
+}
+
+function extractStructuredPayload(metadata: Json | null | undefined) {
+  if (!metadata || typeof metadata !== 'object') return null;
+  const structured = (metadata as Record<string, unknown>).structured;
+  if (!structured || typeof structured !== 'object') return null;
+  return structured as {
+    type?: string;
+    summary?: string | null;
+    normalized_text?: string | null;
+    data?: Json | null;
+  } | null;
+}
+
+function formatStructuredDataPreview(data: Json | null | undefined) {
+  if (!data) return '';
+  try {
+    const serialized = JSON.stringify(data);
+    if (serialized.length <= 320) {
+      return serialized;
+    }
+    return `${serialized.slice(0, 320)}...`;
+  } catch {
+    return '';
+  }
 }
 
 async function ensureDocumentCoverage(
@@ -469,107 +517,93 @@ function buildFeedbackSection(feedbackItems: FeedbackContextItem[]) {
     .join('\n');
 }
 
-async function runAutoReview(
-  question: string,
-  answer: string,
-  documentInventory: string,
-  contextSections: string
-): Promise<AutoReview | null> {
+
+async function fetchConversationHistory(
+  supabase: ReturnType<typeof getServiceSupabase>,
+  chatId: string
+): Promise<ConversationMessage[]> {
+  const { data, error } = await supabase
+    .from('chat_messages')
+    .select('role, content')
+    .eq('chat_id', chatId)
+    .order('created_at', { ascending: true });
+
+  if (error) {
+    console.warn('[rag] Falha ao buscar histórico do chat', error.message);
+    return [];
+  }
+
+  const rows = (data ?? []) as RawChatMessageRow[];
+  return rows
+    .filter((row): row is ConversationMessage => row.role === 'user' || row.role === 'assistant')
+    .map((row) => ({ role: row.role, content: row.content }));
+}
+
+function limitConversationHistory(history: ConversationMessage[]): ConversationMessage[] {
+  if (!history.length) return history;
+  let trimmed = history;
+  if (history.length > MAX_HISTORY_MESSAGES) {
+    trimmed = history.slice(-MAX_HISTORY_MESSAGES);
+  }
+  if (!MAX_HISTORY_CHARACTERS) {
+    return trimmed;
+  }
+
+  const result: ConversationMessage[] = [];
+  let consumed = 0;
+  for (let index = trimmed.length - 1; index >= 0; index -= 1) {
+    const entry = trimmed[index];
+    consumed += entry.content.length;
+    result.push(entry);
+    if (consumed >= MAX_HISTORY_CHARACTERS) {
+      break;
+    }
+  }
+  return result.reverse();
+}
+
+function buildConversationHistoryBlock(history: ConversationMessage[]): string {
+  if (!history.length) return '';
+  return history
+    .map((message) => `${message.role === 'user' ? 'Usuário' : 'Assistente'}: ${message.content}`)
+    .join('\n');
+}
+
+async function rewriteQuestionWithHistory(
+  history: ConversationMessage[],
+  question: string
+): Promise<string | null> {
+  if (!history.length) return null;
+  const block = buildConversationHistoryBlock(history);
+  if (!block) return null;
   try {
     const [raw] = await callChatModel(
       [
         {
           role: 'system',
           content:
-            'Você é um revisor crítico que avalia respostas fornecidas por outro assistente. ' +
-            'Leia a pergunta, o inventário de documentos e o contexto usado, depois verifique a resposta. ' +
-            'Retorne SOMENTE JSON com os campos: verdict ("ok" ou "needs_review"), summary, missing_information (array de strings), required_citations (array) e numeric_alerts (array).'
+            'Você reescreve perguntas para que fiquem completas, sem depender de mensagens anteriores. ' +
+            'Mantenha o idioma e o tom originais e não responda à pergunta.'
         },
         {
           role: 'user',
-          content: `Pergunta original: ${question}\n\nInventário analisado:\n${documentInventory}\n\nContexto fornecido:\n${
-            contextSections || 'Sem contexto'
-          }\n\nResposta entregue:\n${answer}`
+          content: [
+            'Histórico completo da conversa (mais antigo primeiro):',
+            block,
+            `Pergunta atual do usuário: ${question}`,
+            'Reescreva a pergunta acima para que seja entendida de forma independente, mantendo os detalhes necessários. ' +
+              'Retorne apenas a versão reescrita.'
+          ]
+            .filter(Boolean)
+            .join('\n\n')
         }
       ],
-      { maxOutputTokens: 320, temperature: 0 }
+      { maxOutputTokens: 200, temperature: 0.2 }
     );
-    const parsed = parseJsonResponse(raw);
-    const result: AutoReview = {
-      verdict: parsed.verdict === 'needs_review' ? 'needs_review' : 'ok',
-      summary: typeof parsed.summary === 'string' ? parsed.summary.trim() : '',
-      missingInformation: normalizeStringArray(parsed.missing_information),
-      requiredCitations: normalizeStringArray(parsed.required_citations),
-      numericAlerts: normalizeStringArray(parsed.numeric_alerts)
-    };
-    return result;
+    const sanitized = raw.trim();
+    return sanitized.length ? sanitized : null;
   } catch (error) {
-    console.warn('[rag] Falha ao executar revisão automática', error);
+    console.warn('[rag] Falha ao reescrever pergunta com histórico', error);
     return null;
   }
-}
-
-function normalizeStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0).map((entry) => entry.trim());
-}
-
-function appendAutoReviewNote(answer: string, review: AutoReview | null) {
-  if (!review) return answer;
-  const hasContent = Boolean(
-    review.summary || review.missingInformation.length || review.requiredCitations.length || review.numericAlerts.length
-  );
-  if (!hasContent) {
-    return answer;
-  }
-  const details: string[] = [];
-  if (review.missingInformation.length) {
-    details.push(`Lacunas identificadas: ${review.missingInformation.join('; ')}`);
-  }
-  if (review.requiredCitations.length) {
-    details.push(`Citações a confirmar: ${review.requiredCitations.join('; ')}`);
-  }
-  if (review.numericAlerts.length) {
-    details.push(`Números para dupla verificação: ${review.numericAlerts.join('; ')}`);
-  }
-  const header = `Revisão automática (${review.verdict === 'ok' ? 'sem alertas críticos' : 'atenção'}) — ${
-    review.summary || 'sem observações adicionais'
-  }`;
-  return `${answer}\n\n_${[header, ...details].filter(Boolean).join('\n')}_`;
-}
-
-function parseJsonResponse(raw: string) {
-  const attempts = [raw, stripCodeFences(raw), stripPreface(raw)];
-  for (const attempt of attempts) {
-    if (!attempt) continue;
-    try {
-      return JSON.parse(attempt);
-    } catch {
-      continue;
-    }
-  }
-  throw new Error('Resposta do revisor não está em JSON.');
-}
-
-function stripCodeFences(payload: string) {
-  const match = payload.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (match) {
-    return match[1].trim();
-  }
-  return payload.trim();
-}
-
-function stripPreface(payload: string) {
-  if (!payload) return '';
-  const trimmed = payload.trim();
-  const firstBrace = Math.min(
-    ...['{', '['].map((symbol) => {
-      const index = trimmed.indexOf(symbol);
-      return index === -1 ? Number.MAX_SAFE_INTEGER : index;
-    })
-  );
-  if (firstBrace === Number.MAX_SAFE_INTEGER) {
-    return trimmed;
-  }
-  return trimmed.slice(firstBrace);
 }

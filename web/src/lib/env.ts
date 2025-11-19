@@ -18,7 +18,13 @@ const envSchema = z.object({
   EMBEDDING_VECTOR_SIZE: z.coerce.number().int().positive().default(1536),
   CHAT_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(2200),
   SUMMARY_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(800),
-  RAG_MATCH_COUNT: z.coerce.number().int().positive().default(12)
+  RAG_MATCH_COUNT: z.coerce.number().int().positive().default(12),
+  ENABLE_OCR_CORRECTION: z.coerce.boolean().default(true),
+  OCR_CORRECTION_MAX_TOKENS: z.coerce.number().int().positive().default(6000),
+  OCR_CORRECTION_BATCH_SIZE: z.coerce.number().int().positive().default(3),
+  ENABLE_STRUCTURED_BLOCK_ENRICHMENT: z.coerce.boolean().default(true),
+  STRUCTURED_BLOCK_MAX_TOKENS: z.coerce.number().int().positive().default(1800),
+  STRUCTURED_BLOCK_CONCURRENCY: z.coerce.number().int().positive().default(2)
 });
 
 export function getServerEnv(): EnvShape {
@@ -35,7 +41,13 @@ export function getServerEnv(): EnvShape {
       EMBEDDING_VECTOR_SIZE: process.env.EMBEDDING_VECTOR_SIZE,
       CHAT_MAX_OUTPUT_TOKENS: process.env.CHAT_MAX_OUTPUT_TOKENS,
       SUMMARY_MAX_OUTPUT_TOKENS: process.env.SUMMARY_MAX_OUTPUT_TOKENS,
-      RAG_MATCH_COUNT: process.env.RAG_MATCH_COUNT
+      RAG_MATCH_COUNT: process.env.RAG_MATCH_COUNT,
+      ENABLE_OCR_CORRECTION: process.env.ENABLE_OCR_CORRECTION,
+      OCR_CORRECTION_MAX_TOKENS: process.env.OCR_CORRECTION_MAX_TOKENS,
+      OCR_CORRECTION_BATCH_SIZE: process.env.OCR_CORRECTION_BATCH_SIZE,
+      ENABLE_STRUCTURED_BLOCK_ENRICHMENT: process.env.ENABLE_STRUCTURED_BLOCK_ENRICHMENT,
+      STRUCTURED_BLOCK_MAX_TOKENS: process.env.STRUCTURED_BLOCK_MAX_TOKENS,
+      STRUCTURED_BLOCK_CONCURRENCY: process.env.STRUCTURED_BLOCK_CONCURRENCY
     });
     globalThis.__envCache = parsed;
   }
