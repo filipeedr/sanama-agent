@@ -1,12 +1,14 @@
+import type { Json } from '@/types/supabase';
+
 export type ChunkBlockType = 'heading' | 'bullet' | 'table' | 'graphic' | 'text';
 
-export interface ChunkStructuredData {
+export type ChunkStructuredData = {
   type: 'table' | 'graphic';
   summary?: string | null;
   normalizedText?: string | null;
-  data?: Record<string, unknown> | null;
+  data?: Json | null;
   raw?: string | null;
-}
+};
 
 export interface Chunk {
   content: string;

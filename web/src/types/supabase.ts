@@ -6,7 +6,7 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[];
 
-export interface DocumentsRow {
+export type DocumentsRow = {
   id: string;
   title: string | null;
   original_filename: string;
@@ -21,9 +21,9 @@ export interface DocumentsRow {
   tokens_estimated: number | null;
   created_at: string;
   updated_at: string;
-}
+};
 
-export interface DocumentChunksRow {
+export type DocumentChunksRow = {
   id: number;
   document_id: string;
   chunk_index: number;
@@ -34,23 +34,23 @@ export interface DocumentChunksRow {
   section: string | null;
   metadata: Json | null;
   created_at: string;
-}
+};
 
-export interface NotebookRow {
+export type NotebookRow = {
   id: string;
   name: string;
   description: string | null;
   created_at: string;
   updated_at: string;
-}
+};
 
-export interface NotebookDocumentRow {
+export type NotebookDocumentRow = {
   notebook_id: string;
   document_id: string;
   added_at: string;
-}
+};
 
-export interface ChatRow {
+export type ChatRow = {
   id: string;
   notebook_id: string | null;
   title: string | null;
@@ -59,9 +59,9 @@ export interface ChatRow {
   created_at: string;
   updated_at: string;
   last_message_at: string | null;
-}
+};
 
-export interface ChatMessageRow {
+export type ChatMessageRow = {
   id: string;
   chat_id: string;
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -70,9 +70,9 @@ export interface ChatMessageRow {
   token_usage: Json | null;
   metadata: Json | null;
   created_at: string;
-}
+};
 
-export interface ChatFeedbackRow {
+export type ChatFeedbackRow = {
   id: string;
   chat_id: string;
   notebook_id: string;
@@ -87,18 +87,18 @@ export interface ChatFeedbackRow {
   question_embedding: number[] | null;
   metadata: Json | null;
   created_at: string;
-}
+};
 
-export interface ChunkQuestionSignalRow {
+export type ChunkQuestionSignalRow = {
   id: string;
   chunk_id: number;
   notebook_id: string;
   question: string;
   keywords: string[] | null;
   created_at: string;
-}
+};
 
-export interface RagTurnTelemetryRow {
+export type RagTurnTelemetryRow = {
   id: string;
   chat_id: string;
   notebook_id: string;
@@ -110,9 +110,9 @@ export interface RagTurnTelemetryRow {
   feedback_context: Json | null;
   prompt_version: string | null;
   created_at: string;
-}
+};
 
-export interface ProcessingJobRow {
+export type ProcessingJobRow = {
   id: string;
   document_id: string;
   stage:
@@ -130,7 +130,7 @@ export interface ProcessingJobRow {
   error_message: string | null;
   created_at: string;
   updated_at: string;
-}
+};
 
 export interface Database {
   public: {
@@ -139,51 +139,76 @@ export interface Database {
         Row: DocumentsRow;
         Insert: Partial<DocumentsRow> & Pick<DocumentsRow, 'original_filename' | 'storage_path'>;
         Update: Partial<DocumentsRow>;
+        Relationships: [];
       };
       document_chunks: {
         Row: DocumentChunksRow;
-        Insert: Omit<DocumentChunksRow, 'id' | 'created_at'> & { id?: number };
+        Insert: {
+          id?: number;
+          document_id: string;
+          chunk_index: number;
+          content: string;
+          token_count?: number | null;
+          embedding?: number[] | null;
+          page_number?: number | null;
+          section?: string | null;
+          metadata?: Json | null;
+          created_at?: string;
+        };
         Update: Partial<DocumentChunksRow>;
+        Relationships: [];
       };
       notebooks: {
         Row: NotebookRow;
         Insert: Pick<NotebookRow, 'name'> & Partial<NotebookRow>;
         Update: Partial<NotebookRow>;
+        Relationships: [];
       };
       notebook_documents: {
         Row: NotebookDocumentRow;
-        Insert: NotebookDocumentRow;
+        Insert: {
+          notebook_id: string;
+          document_id: string;
+          added_at?: string;
+        };
         Update: Partial<NotebookDocumentRow>;
+        Relationships: [];
       };
       chats: {
         Row: ChatRow;
         Insert: Partial<ChatRow>;
         Update: Partial<ChatRow>;
+        Relationships: [];
       };
       chat_messages: {
         Row: ChatMessageRow;
         Insert: Pick<ChatMessageRow, 'chat_id' | 'role' | 'content'> & Partial<ChatMessageRow>;
         Update: Partial<ChatMessageRow>;
+        Relationships: [];
       };
       chat_feedback: {
         Row: ChatFeedbackRow;
         Insert: Omit<ChatFeedbackRow, 'id' | 'created_at'> & { id?: string };
         Update: Partial<ChatFeedbackRow>;
+        Relationships: [];
       };
       processing_jobs: {
         Row: ProcessingJobRow;
         Insert: Pick<ProcessingJobRow, 'document_id' | 'stage' | 'status'> & Partial<ProcessingJobRow>;
         Update: Partial<ProcessingJobRow>;
+        Relationships: [];
       };
       chunk_question_signals: {
         Row: ChunkQuestionSignalRow;
         Insert: Omit<ChunkQuestionSignalRow, 'id' | 'created_at'> & { id?: string };
         Update: Partial<ChunkQuestionSignalRow>;
+        Relationships: [];
       };
       rag_turn_telemetry: {
         Row: RagTurnTelemetryRow;
         Insert: Omit<RagTurnTelemetryRow, 'id' | 'created_at'> & { id?: string };
         Update: Partial<RagTurnTelemetryRow>;
+        Relationships: [];
       };
     };
     Functions: {

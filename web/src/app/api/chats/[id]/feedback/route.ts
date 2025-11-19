@@ -2,9 +2,15 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getServiceSupabase } from '@/lib/supabase';
 import { embedTexts } from '@/lib/embeddings';
-import type { ChatMessageRow, ChatRow, Database, ChatFeedbackRow } from '@/types/supabase';
+import type {
+  ChatMessageRow,
+  ChatRow,
+  Database,
+  ChatFeedbackRow
+} from '@/types/supabase';
 
-const CHAT_FEEDBACK_TABLE: keyof Database['public']['Tables'] = 'chat_feedback';
+const CHAT_FEEDBACK_TABLE = 'chat_feedback' satisfies keyof Database['public']['Tables'];
+type ChatFeedbackInsert = Database['public']['Tables']['chat_feedback']['Insert'];
 
 const feedbackSchema = z.object({
   messageId: z.string().min(1),
@@ -83,9 +89,11 @@ export async function POST(request: Request, context: RouteParams) {
       metadata: { source: 'ui' }
     } satisfies Database['public']['Tables']['chat_feedback']['Insert'];
 
+    const insertValues: ChatFeedbackInsert[] = [payload];
+
     const { data: inserted, error: insertError } = await supabase
       .from(CHAT_FEEDBACK_TABLE)
-      .insert([payload])
+      .insert(insertValues)
       .select()
       .single<ChatFeedbackRow>();
 

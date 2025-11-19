@@ -4,23 +4,8 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { type ComponentPropsWithoutRef, type FormEvent, useCallback, useEffect, useState } from 'react';
 
-type IdleDeadline = {
-  didTimeout: boolean;
-  timeRemaining: () => number;
-};
-
-type IdleCallbackHandle = ReturnType<typeof setTimeout>;
-type IdleRequestCallback = (deadline: IdleDeadline) => void;
-
-declare global {
-  interface Window {
-    requestIdleCallback?: (callback: IdleRequestCallback, options?: { timeout?: number }) => IdleCallbackHandle;
-    cancelIdleCallback?: (handle: IdleCallbackHandle) => void;
-  }
-}
-
 if (typeof window !== 'undefined' && typeof window.requestIdleCallback !== 'function') {
-  window.requestIdleCallback = (callback: IdleRequestCallback) => {
+  window.requestIdleCallback = (callback: IdleRequestCallback): number => {
     const start = Date.now();
     return window.setTimeout(() => {
       callback({
@@ -30,7 +15,7 @@ if (typeof window !== 'undefined' && typeof window.requestIdleCallback !== 'func
     }, 1);
   };
 
-  window.cancelIdleCallback = (id: IdleCallbackHandle) => {
+  window.cancelIdleCallback = (id: number) => {
     window.clearTimeout(id);
   };
 }

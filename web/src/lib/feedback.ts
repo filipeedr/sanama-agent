@@ -1,14 +1,14 @@
 import { embedTexts } from './embeddings';
 import { getServiceSupabase } from './supabase';
-import type { Database } from '@/types/supabase';
+import type { Database, Json } from '@/types/supabase';
 
-export interface FeedbackContextItem {
+export type FeedbackContextItem = {
   id: string;
   question: string;
   revised_answer: string | null;
   notes: string | null;
   similarity: number;
-}
+};
 
 export async function fetchFeedbackContext(notebookId: string, userMessage: string, options?: { limit?: number }) {
   if (!notebookId) return [] as FeedbackContextItem[];
@@ -49,19 +49,21 @@ export async function recordChunkSignals(params: {
   }
 }
 
+type RagTurnTelemetryInsert = Database['public']['Tables']['rag_turn_telemetry']['Insert'];
+
 export async function recordTurnTelemetry(params: {
   chatId: string;
   notebookId: string;
   userMessage: string;
   answerPreview: string;
-  retrievedChunks: unknown;
-  coverage: unknown;
-  autoReview: unknown;
-  feedbackContext: unknown;
+  retrievedChunks: Json | null;
+  coverage: Json | null;
+  autoReview: Json | null;
+  feedbackContext: Json | null;
   promptVersion: string;
 }) {
   const supabase = getServiceSupabase();
-  const { error } = await supabase.from('rag_turn_telemetry').insert({
+  const telemetryEntry: RagTurnTelemetryInsert = {
     chat_id: params.chatId,
     notebook_id: params.notebookId,
     user_message: params.userMessage,
@@ -71,7 +73,8 @@ export async function recordTurnTelemetry(params: {
     auto_review: params.autoReview ?? null,
     feedback_context: params.feedbackContext ?? null,
     prompt_version: params.promptVersion
-  });
+  };
+  const { error } = await supabase.from('rag_turn_telemetry').insert(telemetryEntry);
   if (error) {
     console.warn('[feedback] Falha ao registrar telemetria do turno', error.message);
   }

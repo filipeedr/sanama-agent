@@ -1,8 +1,8 @@
 import '@/lib/polyfills/domMatrix';
-import { createCanvas } from '@napi-rs/canvas';
+import { createCanvas, type Canvas, type SKRSContext2D } from '@napi-rs/canvas';
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import path from 'node:path';
-import type { PDFDocumentProxy } from 'pdfjs-dist/types/src/display/api';
+import type { DocumentInitParameters, PDFDocumentProxy } from 'pdfjs-dist/types/src/display/api';
 import type { DocumentsRow, Json } from '@/types/supabase';
 
 import { chunkText, estimateTokenCount, type Chunk } from './chunking';
@@ -10,7 +10,7 @@ import { embedTexts } from './embeddings';
 import { getServiceSupabase } from './supabase';
 import { downloadDocumentBinary } from './storage';
 import { correctOcrTextWithLLM, generateSummaryFromText, normalizeStructuredBlockWithLLM } from './llm';
-import { buildSemanticAttributes } from './semantic-index';
+import { buildSemanticAttributes, type SemanticAttributes } from './semantic-index';
 import { getServerEnv } from './env';
 
 interface ExtractionResult {
@@ -19,8 +19,8 @@ interface ExtractionResult {
 }
 
 type CanvasAndContext = {
-  canvas: ReturnType<typeof createCanvas>;
-  context: CanvasRenderingContext2D;
+  canvas: Canvas;
+  context: SKRSContext2D;
 };
 
 const APP_ROOT = process.cwd();
@@ -190,15 +190,19 @@ async function withStage<T>(documentId: string, stage: Stage, fn: () => Promise<
   }
 }
 
-function truncateForJson(value: unknown) {
-  const serialized = JSON.stringify(value);
-  if (serialized.length > 1000) {
-    return `${serialized.slice(0, 1000)}...`;
+function truncateForJson(value: unknown): Json {
+  try {
+    const serialized = JSON.stringify(value);
+    if (serialized.length > 1000) {
+      return `${serialized.slice(0, 1000)}...`;
+    }
+    return JSON.parse(serialized) as Json;
+  } catch {
+    return String(value).slice(0, 1000);
   }
-  return value;
 }
 
-async function recordStage(documentId: string, stage: Stage, status: 'running' | 'completed' | 'failed', payload?: unknown) {
+async function recordStage(documentId: string, stage: Stage, status: 'running' | 'completed' | 'failed', payload?: Json | null) {
   const supabase = getServiceSupabase();
   await supabase.from('processing_jobs').insert({
     document_id: documentId,
@@ -309,18 +313,18 @@ async function enrichStructuredChunks(
   return chunks;
 }
 
-function buildChunkMetadata(chunk: Chunk, semanticAttributes: unknown) {
-  const structuredPayload = chunk.structuredData
+function buildChunkMetadata(chunk: Chunk, semanticAttributes: SemanticAttributes): Json {
+  const structuredPayload: Json | null = chunk.structuredData
     ? {
         type: chunk.structuredData.type,
         summary: chunk.structuredData.summary ?? null,
         normalized_text: chunk.structuredData.normalizedText ?? null,
-        data: chunk.structuredData.data ?? null,
+        data: (chunk.structuredData.data as Json | null) ?? null,
         raw_excerpt: chunk.structuredData.raw ? chunk.structuredData.raw.slice(0, 1800) : null
       }
     : null;
 
-  const baseMetadata: Record<string, unknown> = {
+  const baseMetadata: Record<string, Json | undefined> = {
     source: 'pipeline',
     block_type: chunk.blockType,
     semantic: semanticAttributes
@@ -358,7 +362,12 @@ async function extractTextWithPdfJs(
   buffer: Buffer,
   options: { throwOnEmpty?: boolean } = { throwOnEmpty: true }
 ): Promise<ExtractionResult> {
-  const task = getDocument({ data: toUint8Array(buffer), useSystemFonts: true, disableWorker: true });
+  const documentParams: DocumentInitParameters & { disableWorker?: boolean } = {
+    data: toUint8Array(buffer),
+    useSystemFonts: true,
+    disableWorker: true
+  };
+  const task = getDocument(documentParams);
   const doc: PDFDocumentProxy = await task.promise;
   const numPages = doc.numPages;
   const sections: string[] = [];
@@ -441,7 +450,12 @@ async function prepareOcrSources(
 }
 
 async function renderPdfPagesToImages(buffer: Buffer) {
-  const doc = await getDocument({ data: toUint8Array(buffer), useSystemFonts: true, disableWorker: true }).promise;
+  const params: DocumentInitParameters & { disableWorker?: boolean } = {
+    data: toUint8Array(buffer),
+    useSystemFonts: true,
+    disableWorker: true
+  };
+  const doc = await getDocument(params).promise;
   const canvasFactory = new NodeCanvasFactory();
   const pages: { buffer: Buffer; page: number }[] = [];
 
@@ -451,9 +465,10 @@ async function renderPdfPagesToImages(buffer: Buffer) {
     const canvasAndContext = canvasFactory.create(viewport.width, viewport.height);
     const renderContext = {
       canvasContext: canvasAndContext.context,
+      canvas: canvasAndContext.canvas,
       viewport,
       canvasFactory
-    };
+    } as unknown as Parameters<typeof page.render>[0];
     await page.render(renderContext).promise;
     const imageBuffer = canvasAndContext.canvas.toBuffer('image/png');
     pages.push({ buffer: imageBuffer, page: pageNumber });

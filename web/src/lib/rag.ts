@@ -6,25 +6,25 @@ import { fetchFeedbackContext, recordChunkSignals, recordTurnTelemetry } from '.
 import type { FeedbackContextItem } from './feedback';
 import type { Json } from '@/types/supabase';
 
-interface Citation {
+type Citation = {
   chunk_id: number;
   document_id: string;
   similarity: number;
   label: string;
-}
+};
 
-interface DocumentCoverage {
+type DocumentCoverage = {
   totalDocuments: number;
   retrievedDocuments: string[];
   forcedDocuments: string[];
-}
+};
 
-export interface ChatTurnResult {
+export type ChatTurnResult = {
   answer: string;
   citations: Citation[];
   coverage: DocumentCoverage;
   feedbackContext: FeedbackContextItem[];
-}
+};
 
 type ConversationMessage = {
   role: 'user' | 'assistant';

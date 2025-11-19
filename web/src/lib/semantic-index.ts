@@ -1,12 +1,12 @@
 import { callChatModel } from './llm';
 
-export interface SemanticAttributes {
+export type SemanticAttributes = {
   summary: string;
   keywords: string[];
   amounts: string[];
   dates: string[];
   clauses: string[];
-}
+};
 
 const currencyRegex = /R\$\s?\d{1,3}(?:\.\d{3})*(?:,\d+)?/gi;
 const dateRegex = /\b\d{1,2}[\/\.\-]\d{1,2}[\/\.\-]\d{2,4}\b/g;

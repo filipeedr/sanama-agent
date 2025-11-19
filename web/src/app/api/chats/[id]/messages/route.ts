@@ -3,12 +3,15 @@ import { z } from 'zod';
 import { getServiceSupabase } from '@/lib/supabase';
 import { runRagChat } from '@/lib/rag';
 import { generateChatTitleFromQuestion } from '@/lib/llm';
+import type { Database } from '@/types/supabase';
 
 const bodySchema = z.object({ content: z.string().min(3) });
 
 interface RouteParams {
   params: Promise<{ id: string }>;
 }
+
+type ChatMessageInsert = Database['public']['Tables']['chat_messages']['Insert'];
 
 export async function GET(_request: Request, context: RouteParams) {
   try {
@@ -51,7 +54,7 @@ export async function POST(request: Request, context: RouteParams) {
       return NextResponse.json({ error: 'Chat não encontrado.' }, { status: 404 });
     }
 
-    const userMessage = {
+    const userMessage: ChatMessageInsert = {
       chat_id: chat.id,
       role: 'user' as const,
       content: parsed.data.content,
@@ -68,7 +71,7 @@ export async function POST(request: Request, context: RouteParams) {
     const ragResult = await runRagChat(chat.id, parsed.data.content);
     const newTitle = await titlePromise;
 
-    await supabase.from('chat_messages').insert({
+    const assistantMessage: ChatMessageInsert = {
       chat_id: chat.id,
       role: 'assistant',
       content: ragResult.answer,
@@ -78,7 +81,9 @@ export async function POST(request: Request, context: RouteParams) {
         feedback_context: ragResult.feedbackContext,
         prompt_version: 'rag-v2-feedback-loop'
       }
-    });
+    };
+
+    await supabase.from('chat_messages').insert(assistantMessage);
 
     const chatUpdate: Record<string, string> = {
       last_message_at: new Date().toISOString(),

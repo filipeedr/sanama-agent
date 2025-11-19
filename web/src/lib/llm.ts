@@ -1,5 +1,6 @@
 import { getServerEnv } from './env';
 import { estimateTokenCount } from './chunking';
+import type { Json } from '@/types/supabase';
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -104,7 +105,7 @@ export async function normalizeStructuredBlockWithLLM(params: {
   type: 'table' | 'graphic';
   documentTitle?: string;
   maxOutputTokens?: number;
-}): Promise<{ summary?: string; normalizedText?: string; structuredJson?: Record<string, unknown> | null } | null> {
+}): Promise<{ summary?: string; normalizedText?: string; structuredJson?: Json | null } | null> {
   const env = getServerEnv();
   if (!env.ENABLE_STRUCTURED_BLOCK_ENRICHMENT) {
     return null;
@@ -152,7 +153,9 @@ export async function normalizeStructuredBlockWithLLM(params: {
     const normalizedText =
       typeof parsed.normalized_text === 'string' ? parsed.normalized_text.trim() : undefined;
     const structuredJson =
-      parsed.structured_data && typeof parsed.structured_data === 'object' ? parsed.structured_data : null;
+      parsed.structured_data && typeof parsed.structured_data === 'object'
+        ? (parsed.structured_data as Json)
+        : null;
     return { summary, normalizedText, structuredJson };
   } catch (error) {
     console.warn('[Structured Block] Falha ao normalizar bloco estruturado', error);
