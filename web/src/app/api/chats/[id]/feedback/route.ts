@@ -71,8 +71,7 @@ export async function POST(request: Request, context: RouteParams) {
       .map((citation) => (typeof citation?.chunk_id === 'number' ? citation.chunk_id : undefined))
       .filter((value): value is number => typeof value === 'number');
 
-    const chatFeedbackTable: keyof Database['public']['Tables'] = 'chat_feedback';
-    const payload: Database['public']['Tables']['chat_feedback']['Insert'] = {
+    const payload = {
       chat_id: chatId,
       notebook_id: chat.notebook_id,
       message_id: message.id,
@@ -85,10 +84,10 @@ export async function POST(request: Request, context: RouteParams) {
       applied_chunk_ids: appliedChunkIds.length ? appliedChunkIds : null,
       question_embedding: questionEmbedding,
       metadata: { source: 'ui' }
-    };
+    } satisfies Database['public']['Tables']['chat_feedback']['Insert'];
 
     const { data: inserted, error: insertError } = await supabase
-      .from(chatFeedbackTable)
+      .from('chat_feedback')
       .insert(payload)
       .select()
       .single<ChatFeedbackRow>();
