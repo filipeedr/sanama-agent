@@ -2,22 +2,26 @@
 
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { type ComponentPropsWithoutRef, type FormEvent, useCallback, useEffect, useState } from 'react';
+import { type ComponentPropsWithoutRef, type FormEvent, useCallback, useEffect, useState, useRef } from 'react';
 
-if (typeof window !== 'undefined' && typeof window.requestIdleCallback !== 'function') {
-  window.requestIdleCallback = (callback: IdleRequestCallback): number => {
-    const start = Date.now();
-    return window.setTimeout(() => {
-      callback({
-        didTimeout: false,
-        timeRemaining: () => Math.max(0, 50 - (Date.now() - start))
-      });
-    }, 1);
-  };
+if (typeof window !== 'undefined') {
+  if (typeof (window as any).requestIdleCallback !== 'function') {
+    (window as any).requestIdleCallback = (callback: IdleRequestCallback): number => {
+      const start = Date.now();
+      return window.setTimeout(() => {
+        callback({
+          didTimeout: false,
+          timeRemaining: () => Math.max(0, 50 - (Date.now() - start))
+        });
+      }, 1);
+    };
+  }
 
-  window.cancelIdleCallback = (id: number) => {
-    window.clearTimeout(id);
-  };
+  if (typeof (window as any).cancelIdleCallback !== 'function') {
+    (window as any).cancelIdleCallback = (id: number) => {
+      window.clearTimeout(id);
+    };
+  }
 }
 
 interface DocumentRecord {
@@ -80,7 +84,22 @@ export default function Home() {
   const [deletingChatId, setDeletingChatId] = useState<string | null>(null);
   const [feedbackDrafts, setFeedbackDrafts] = useState<Record<string, FeedbackDraft>>({});
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragFiles, setDragFiles] = useState<File[]>([]);
+  const [openDropdownId, setOpenDropdownId] = useState<string | null>(null);
+  const [editingNotebookId, setEditingNotebookId] = useState<string | null>(null);
+  const [editingNotebookName, setEditingNotebookName] = useState('');
+  const [updatingNotebookId, setUpdatingNotebookId] = useState<string | null>(null);
+  const [typingMessages, setTypingMessages] = useState<Record<string, string>>({});
+  const typingTimeoutsRef = useRef<Record<string, NodeJS.Timeout>>({});
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const emptyDraft: FeedbackDraft = { rating: null, notes: '', revisedAnswer: '', status: 'idle' };
+  
+  const MAX_DOCUMENTS = 50;
+  const currentDocumentCount = documents.length;
+  const remainingSlots = Math.max(0, MAX_DOCUMENTS - currentDocumentCount);
+  const isAtLimit = currentDocumentCount >= MAX_DOCUMENTS;
 
   // Determina se estamos na view de chat ou na página inicial
   const isChatView = selectedNotebookId !== null;
@@ -118,17 +137,60 @@ export default function Home() {
     setChats(filtered);
   }, [selectedNotebookId]);
 
+  const startTypingEffect = useCallback((messageId: string, fullText: string) => {
+    // Limpa timeout anterior se existir
+    if (typingTimeoutsRef.current[messageId]) {
+      clearTimeout(typingTimeoutsRef.current[messageId]);
+    }
+    
+    setTypingMessages(prev => ({ ...prev, [messageId]: '' }));
+    let currentIndex = 0;
+    const charsPerChunk = 3; // Múltiplos caracteres por vez para ser rápido
+    
+    const typeNext = () => {
+      if (currentIndex < fullText.length) {
+        const nextIndex = Math.min(currentIndex + charsPerChunk, fullText.length);
+        setTypingMessages(prev => ({ ...prev, [messageId]: fullText.slice(0, nextIndex) }));
+        currentIndex = nextIndex;
+        typingTimeoutsRef.current[messageId] = setTimeout(typeNext, 15); // 15ms = rápido mas visível
+      } else {
+        // Remove da lista quando terminar
+        setTimeout(() => {
+          setTypingMessages(prev => {
+            const newState = { ...prev };
+            delete newState[messageId];
+            return newState;
+          });
+        }, 100);
+      }
+    };
+    
+    typeNext();
+  }, []);
+
   const loadMessages = useCallback(
-    async (chatId: string) => {
+    async (chatId: string, skipTypingEffect = false) => {
       const response = await fetch(`/api/chats/${chatId}/messages`, { cache: 'no-store' });
       if (!response.ok) {
         setStatusMessage('Erro ao carregar mensagens');
         return;
       }
       const payload = await response.json();
-      setMessages((payload.data ?? []).map((message: ChatMessageRecord) => ({ ...message, pending: false })));
+      const loadedMessages = (payload.data ?? []).map((message: ChatMessageRecord) => ({ ...message, pending: false }));
+      setMessages(loadedMessages);
+      
+      // Só inicia efeito de digitação se for uma nova mensagem (não ao carregar mensagens antigas)
+      if (!skipTypingEffect) {
+        const lastMessage = loadedMessages[loadedMessages.length - 1];
+        if (lastMessage && lastMessage.role === 'assistant' && !lastMessage.pending) {
+          // Pequeno delay para garantir que o estado foi atualizado
+          setTimeout(() => {
+            startTypingEffect(lastMessage.id, lastMessage.content);
+          }, 100);
+        }
+      }
     },
-    []
+    [startTypingEffect]
   );
 
   useEffect(() => {
@@ -150,31 +212,85 @@ export default function Home() {
 
   useEffect(() => {
     if (selectedChatId) {
-      loadMessages(selectedChatId);
+      // Ao entrar no chat, carrega mensagens sem animação de digitação
+      loadMessages(selectedChatId, true);
     } else {
       setMessages([]);
     }
   }, [selectedChatId, loadMessages]);
 
+  // Scroll automático para o final quando novas mensagens são adicionadas
+  useEffect(() => {
+    if (messagesEndRef.current && messagesContainerRef.current) {
+      const container = messagesContainerRef.current;
+      const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 200;
+      
+      // Faz scroll se o usuário estiver perto do final ou se for uma nova mensagem
+      if (isNearBottom || messages.length <= 1) {
+        setTimeout(() => {
+          messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }, 100);
+      }
+    }
+  }, [messages.length]);
+
   useEffect(() => {
     setFeedbackDrafts({});
+    // Limpa timeouts ao mudar de chat
+    Object.values(typingTimeoutsRef.current).forEach(timeout => clearTimeout(timeout));
+    typingTimeoutsRef.current = {};
+    setTypingMessages({});
   }, [selectedChatId]);
 
   const handleUpload = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const formElement = event.currentTarget;
-    const formData = new FormData(formElement);
-    const collectedFiles = formData
-      .getAll('files')
-      .filter((entry): entry is File => entry instanceof File);
-    const fallback = formData.get('file');
-    if (fallback instanceof File && !collectedFiles.length) {
-      collectedFiles.push(fallback);
+    const formData = new FormData();
+    
+    const currentCount = documents.length;
+    
+    // Verifica o limite antes de processar
+    if (currentCount >= MAX_DOCUMENTS) {
+      setStatusMessage(`Limite de ${MAX_DOCUMENTS} documentos atingido. Exclua documentos antes de adicionar novos.`);
+      setTimeout(() => setStatusMessage(null), 4000);
+      return;
     }
+    
+    // Usa arquivos do drag & drop se disponíveis, senão usa do formulário
+    let collectedFiles: File[] = [];
+    if (dragFiles.length > 0) {
+      collectedFiles = dragFiles;
+      dragFiles.forEach((file) => {
+        formData.append('files', file);
+      });
+    } else {
+      const originalFormData = new FormData(formElement);
+      const formFiles = originalFormData
+        .getAll('files')
+        .filter((entry): entry is File => entry instanceof File);
+      const fallback = originalFormData.get('file');
+      if (fallback instanceof File && !formFiles.length) {
+        formFiles.push(fallback);
+      }
+      collectedFiles = formFiles;
+      formFiles.forEach((file) => {
+        formData.append('files', file);
+      });
+    }
+    
     if (!collectedFiles.length) {
       setStatusMessage('Selecione pelo menos um arquivo');
       return;
     }
+    
+    // Verifica se o número de arquivos excede o limite disponível
+    if (currentCount + collectedFiles.length > MAX_DOCUMENTS) {
+      const allowedCount = MAX_DOCUMENTS - currentCount;
+      setStatusMessage(`Você pode enviar apenas mais ${allowedCount} documento(s). Limite de ${MAX_DOCUMENTS} documentos.`);
+      setTimeout(() => setStatusMessage(null), 4000);
+      return;
+    }
+    
     setUploading(true);
     setStatusMessage(`Processando ${collectedFiles.length} arquivo(s)...`);
     try {
@@ -189,11 +305,97 @@ export default function Home() {
       await loadDocuments();
       setStatusMessage('Documentos enviados para processamento');
       formElement.reset();
+      setDragFiles([]);
     } catch (error) {
       setStatusMessage((error as Error).message);
     } finally {
       setUploading(false);
       setTimeout(() => setStatusMessage(null), 4000);
+    }
+  };
+
+  const handleDragEnter = (event: React.DragEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (documents.length < MAX_DOCUMENTS) {
+      setIsDragging(true);
+    }
+  };
+
+  const handleDragLeave = (event: React.DragEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDragOver = (event: React.DragEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  const handleDrop = (event: React.DragEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDragging(false);
+
+    const currentCount = documents.length;
+
+    if (currentCount >= MAX_DOCUMENTS) {
+      setStatusMessage(`Limite de ${MAX_DOCUMENTS} documentos atingido. Exclua documentos antes de adicionar novos.`);
+      setTimeout(() => setStatusMessage(null), 4000);
+      return;
+    }
+
+    const files = Array.from(event.dataTransfer.files).filter((file) => {
+      const validTypes = ['application/pdf', 'image/png', 'image/jpeg'];
+      return validTypes.includes(file.type);
+    });
+
+    if (files.length > 0) {
+      // Verifica se o número de arquivos excede o limite disponível
+      if (currentCount + files.length > MAX_DOCUMENTS) {
+        const allowedCount = MAX_DOCUMENTS - currentCount;
+        setStatusMessage(`Você pode enviar apenas mais ${allowedCount} documento(s). Limite de ${MAX_DOCUMENTS} documentos.`);
+        setTimeout(() => setStatusMessage(null), 4000);
+        return;
+      }
+      setDragFiles(files);
+    } else {
+      setStatusMessage('Apenas arquivos PDF, PNG ou JPEG são permitidos');
+      setTimeout(() => setStatusMessage(null), 4000);
+    }
+  };
+
+  const handleFileInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files) {
+      const currentCount = documents.length;
+      
+      if (currentCount >= MAX_DOCUMENTS) {
+        setStatusMessage(`Limite de ${MAX_DOCUMENTS} documentos atingido. Exclua documentos antes de adicionar novos.`);
+        setTimeout(() => setStatusMessage(null), 4000);
+        event.target.value = '';
+        return;
+      }
+
+      const files = Array.from(event.target.files).filter((file) => {
+        const validTypes = ['application/pdf', 'image/png', 'image/jpeg'];
+        return validTypes.includes(file.type);
+      });
+      
+      if (files.length > 0) {
+        // Verifica se o número de arquivos excede o limite disponível
+        if (currentCount + files.length > MAX_DOCUMENTS) {
+          const allowedCount = MAX_DOCUMENTS - currentCount;
+          setStatusMessage(`Você pode enviar apenas mais ${allowedCount} documento(s). Limite de ${MAX_DOCUMENTS} documentos.`);
+          setTimeout(() => setStatusMessage(null), 4000);
+          event.target.value = '';
+          return;
+        }
+        setDragFiles(files);
+      } else {
+        setStatusMessage('Apenas arquivos PDF, PNG ou JPEG são permitidos');
+        setTimeout(() => setStatusMessage(null), 4000);
+      }
     }
   };
 
@@ -285,6 +487,7 @@ export default function Home() {
   const handleDeleteNotebook = async (notebookId: string) => {
     if (deletingNotebookId) return;
     setDeletingNotebookId(notebookId);
+    setOpenDropdownId(null);
     try {
       const response = await fetch('/api/notebooks', {
         method: 'DELETE',
@@ -307,6 +510,47 @@ export default function Home() {
       setStatusMessage((error as Error).message);
     } finally {
       setDeletingNotebookId(null);
+      setTimeout(() => setStatusMessage(null), 4000);
+    }
+  };
+
+  const handleEditNotebook = (notebook: NotebookRecord) => {
+    setEditingNotebookId(notebook.id);
+    setEditingNotebookName(notebook.name);
+    setOpenDropdownId(null);
+  };
+
+  const handleCancelEdit = () => {
+    setEditingNotebookId(null);
+    setEditingNotebookName('');
+  };
+
+  const handleSaveNotebookName = async (notebookId: string) => {
+    if (!editingNotebookName.trim() || editingNotebookName.trim().length < 3) {
+      setStatusMessage('O nome deve ter pelo menos 3 caracteres');
+      setTimeout(() => setStatusMessage(null), 4000);
+      return;
+    }
+    
+    setUpdatingNotebookId(notebookId);
+    try {
+      const response = await fetch('/api/notebooks', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: notebookId, name: editingNotebookName.trim() })
+      });
+      if (!response.ok) {
+        const payload = await response.json();
+        throw new Error(payload.error ?? 'Erro ao atualizar notebook');
+      }
+      await loadNotebooks();
+      setEditingNotebookId(null);
+      setEditingNotebookName('');
+      setStatusMessage('Nome do agente atualizado');
+    } catch (error) {
+      setStatusMessage((error as Error).message);
+    } finally {
+      setUpdatingNotebookId(null);
       setTimeout(() => setStatusMessage(null), 4000);
     }
   };
@@ -345,7 +589,11 @@ export default function Home() {
       return;
     }
     const messageContent = chatInput.trim();
-    if (!messageContent) return;
+    if (!messageContent || messageContent.length < 3) {
+      setStatusMessage('A mensagem deve ter pelo menos 3 caracteres');
+      setTimeout(() => setStatusMessage(null), 4000);
+      return;
+    }
     setSendingMessage(true);
     const userTempId = `user-${Date.now()}`;
     const assistantTempId = `assistant-${Date.now()}`;
@@ -367,6 +615,11 @@ export default function Home() {
       }
     ]);
     setChatInput('');
+    
+    // Scroll imediato quando o usuário envia mensagem
+    setTimeout(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, 50);
     try {
       const response = await fetch(`/api/chats/${selectedChatId}/messages`, {
         method: 'POST',
@@ -375,10 +628,25 @@ export default function Home() {
       });
       if (!response.ok) {
         const payload = await response.json();
-        throw new Error(payload.error ?? 'Erro ao enviar mensagem');
+        const errorMessage = typeof payload.error === 'object' && payload.error?.content
+          ? payload.error.content[0] ?? 'Erro ao enviar mensagem'
+          : payload.error ?? 'Erro ao enviar mensagem';
+        throw new Error(errorMessage);
       }
-      await loadMessages(selectedChatId);
+      // Carrega mensagens com animação de digitação para a nova resposta da IA
+      await loadMessages(selectedChatId, false);
       await loadChats();
+      
+      // Força scroll para baixo após enviar mensagem
+      setTimeout(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, 300);
+      
+      // Reset textarea height after sending
+      const textarea = document.querySelector('textarea[placeholder="Tire dúvidas sobre o documento..."]') as HTMLTextAreaElement;
+      if (textarea) {
+        textarea.style.height = 'auto';
+      }
     } catch (error) {
       setMessages((previous) => previous.filter((message) => ![userTempId, assistantTempId].includes(message.id)));
       setStatusMessage((error as Error).message);
@@ -496,37 +764,84 @@ export default function Home() {
     return (
       <div className="flex h-screen w-full bg-gradient-to-br from-slate-50 via-white to-slate-50">
         {/* Sidebar de Documentos */}
-        <aside className="flex-shrink-0 w-80 border-r border-slate-200/60 bg-white/80 backdrop-blur-sm overflow-y-auto">
-          <div className="p-6">
-            <div className="mb-6">
-              <h2 className="text-sm font-semibold text-slate-900 mb-1">Documentos</h2>
-              <p className="text-xs text-slate-500">Gerencie seus documentos</p>
-            </div>
+        <aside className="flex-shrink-0 w-80 border-r border-slate-200/60 bg-white/80 backdrop-blur-sm flex flex-col h-screen">
+          <div className="flex-1 overflow-y-auto">
+            <div className="p-6">
+              <div className="mb-6">
+                <h2 className="text-sm font-semibold text-slate-900 mb-1">Documentos</h2>
+              </div>
 
-            {/* Upload de documentos */}
-            <div className="mb-6 p-4 border border-slate-200 rounded-xl bg-gradient-to-br from-slate-50 to-white shadow-sm hover:shadow-md transition-all duration-300">
-              <h3 className="text-xs font-semibold text-slate-900 mb-3">Upload</h3>
+              {/* Upload de documentos */}
+              <div className="mb-6 p-4 border border-slate-200 rounded-xl bg-gradient-to-br from-slate-50 to-white shadow-sm hover:shadow-md transition-all duration-300">
               <form onSubmit={handleUpload} className="space-y-3">
-                <input
-                  type="text"
-                  name="title"
-                  placeholder="Título (opcional)"
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200/50 transition-all duration-200"
-                />
-                <input
-                  type="file"
-                  name="files"
-                  accept="application/pdf,image/png,image/jpeg"
-                  className="w-full text-xs file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-900 file:text-white hover:file:bg-slate-800 file:transition-colors file:duration-200 cursor-pointer"
-                  multiple
-                  required
-                />
+                <div
+                  onDragEnter={handleDragEnter}
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleDrop}
+                  className={`relative border-2 border-dashed rounded-lg p-6 text-center transition-all duration-200 ${
+                    isAtLimit
+                      ? 'border-slate-200 bg-slate-50 opacity-60 cursor-not-allowed'
+                      : isDragging
+                      ? 'border-slate-900 bg-slate-100'
+                      : 'border-slate-300 bg-white hover:border-slate-400 hover:bg-slate-50'
+                  }`}
+                >
+                  <input
+                    type="file"
+                    name="files"
+                    id="file-upload"
+                    accept="application/pdf,image/png,image/jpeg"
+                    className="absolute inset-0 w-full h-full opacity-0 z-10"
+                    multiple
+                    onChange={handleFileInputChange}
+                    disabled={isAtLimit}
+                    style={{ cursor: isAtLimit ? 'not-allowed' : 'pointer' }}
+                  />
+                  <div className="relative z-0">
+                    <svg
+                      className="mx-auto h-8 w-8 text-slate-400 mb-2 pointer-events-none"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+                      />
+                    </svg>
+                    <p className="text-xs text-slate-600 mb-1 pointer-events-none">
+                      {isAtLimit
+                        ? `Limite de ${MAX_DOCUMENTS} documentos atingido`
+                        : isDragging
+                        ? 'Solte os arquivos aqui'
+                        : dragFiles.length > 0
+                        ? `${dragFiles.length} arquivo(s) selecionado(s)`
+                        : 'Arraste arquivos aqui ou clique para selecionar'}
+                    </p>
+                    <p className="text-xs text-slate-400 pointer-events-none">PDF, PNG ou JPEG</p>
+                    {dragFiles.length > 0 && (
+                      <div className="mt-3 space-y-1 pointer-events-none">
+                        {dragFiles.map((file, index) => (
+                          <p key={index} className="text-xs text-slate-700 truncate">
+                            {file.name}
+                          </p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
                 <button
                   type="submit"
-                  disabled={uploading}
-                  className="w-full rounded-lg bg-slate-900 px-3 py-2 text-xs font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 transition-all duration-200 hover:shadow-md active:scale-[0.98]"
+                  disabled={uploading || dragFiles.length === 0 || isAtLimit}
+                  className="w-full rounded-lg px-3 py-2 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-50 transition-all duration-200 hover:shadow-md active:scale-[0.98]"
+                  style={{ backgroundColor: '#085E83' }}
+                  onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#064d6a'}
+                  onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#085E83'}
                 >
-                  {uploading ? 'Processando...' : 'Enviar'}
+                  {uploading ? 'Processando...' : isAtLimit ? 'Limite atingido' : 'Enviar'}
                 </button>
               </form>
             </div>
@@ -548,9 +863,11 @@ export default function Home() {
                       </p>
                     </div>
                     <div className="flex items-center gap-1.5 flex-shrink-0">
-                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium transition-colors ${statusBadge(document.status)}`}>
-                        {statusLabel(document.status)}
-                      </span>
+                      {document.status !== 'ready' && (
+                        <span className={`rounded-full px-2 py-0.5 text-xs font-medium transition-colors ${statusBadge(document.status)}`}>
+                          {statusLabel(document.status)}
+                        </span>
+                      )}
                       <button
                         type="button"
                         onClick={() => handleDeleteDocument(document.id)}
@@ -568,6 +885,39 @@ export default function Home() {
                 <p className="text-xs text-slate-500 text-center py-8">Nenhum documento ainda</p>
               )}
             </div>
+            </div>
+          </div>
+
+          {/* Rodapé fixo com barra de progresso do limite */}
+          <div className="flex-shrink-0 border-t border-slate-200 bg-white/80 backdrop-blur-sm p-6">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-xs font-medium text-slate-700">Limite de documentos</span>
+              <span className={`text-xs font-semibold ${isAtLimit ? 'text-rose-600' : 'text-slate-600'}`}>
+                {currentDocumentCount}/{MAX_DOCUMENTS}
+              </span>
+            </div>
+            <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all duration-300 ${
+                  isAtLimit
+                    ? 'bg-rose-500'
+                    : currentDocumentCount >= MAX_DOCUMENTS * 0.8
+                    ? 'bg-amber-500'
+                    : 'bg-slate-900'
+                }`}
+                style={{ width: `${Math.min(100, (currentDocumentCount / MAX_DOCUMENTS) * 100)}%` }}
+              />
+            </div>
+            {isAtLimit && (
+              <p className="text-xs text-rose-600 mt-2 text-center">
+                Exclua documentos para liberar espaço
+              </p>
+            )}
+            {!isAtLimit && remainingSlots <= 10 && (
+              <p className="text-xs text-amber-600 mt-2 text-center">
+                Restam {remainingSlots} vaga(s)
+              </p>
+            )}
           </div>
         </aside>
 
@@ -584,32 +934,149 @@ export default function Home() {
               {notebooks.map((notebook) => (
                 <div
                   key={notebook.id}
-                  onClick={() => handleNotebookClick(notebook.id)}
-                  className="group relative rounded-2xl border border-slate-200 bg-white p-6 hover:border-slate-300 hover:shadow-lg transition-all duration-300 cursor-pointer hover:-translate-y-1"
+                  className="group relative rounded-2xl border border-slate-200 bg-white p-6 hover:border-slate-300 hover:shadow-lg transition-all duration-300 hover:-translate-y-1"
                 >
                   <div className="flex items-start justify-between mb-3">
-                    <div className="flex-1 min-w-0">
-                      <h3 className="text-base font-semibold text-slate-900 mb-1 group-hover:text-slate-700 transition-colors">
-                        {notebook.name}
-                      </h3>
-                      {notebook.description && (
-                        <p className="text-sm text-slate-600 line-clamp-2">{notebook.description}</p>
+                    <div 
+                      className="flex-1 min-w-0 cursor-pointer"
+                      onClick={() => handleNotebookClick(notebook.id)}
+                    >
+                      {editingNotebookId === notebook.id ? (
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={editingNotebookName}
+                            onChange={(e) => setEditingNotebookName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                handleSaveNotebookName(notebook.id);
+                              } else if (e.key === 'Escape') {
+                                handleCancelEdit();
+                              }
+                            }}
+                            className="text-base font-semibold text-slate-900 border border-slate-300 rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-slate-400 w-full"
+                            autoFocus
+                            disabled={updatingNotebookId === notebook.id}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleSaveNotebookName(notebook.id)}
+                            disabled={updatingNotebookId === notebook.id}
+                            className="text-emerald-600 hover:text-emerald-700 disabled:opacity-50 transition-colors"
+                            title="Salvar"
+                          >
+                            ✓
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleCancelEdit}
+                            disabled={updatingNotebookId === notebook.id}
+                            className="text-slate-400 hover:text-slate-600 disabled:opacity-50 transition-colors"
+                            title="Cancelar"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <h3 className="text-base font-semibold text-slate-900 mb-1 group-hover:text-slate-700 transition-colors">
+                            {notebook.name}
+                          </h3>
+                          {notebook.description && (
+                            <p className="text-sm text-slate-600 line-clamp-2">{notebook.description}</p>
+                          )}
+                        </>
                       )}
                     </div>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeleteNotebook(notebook.id);
-                      }}
-                      disabled={deletingNotebookId === notebook.id}
-                      className="text-slate-400 hover:text-red-600 disabled:opacity-50 transition-colors duration-200 opacity-0 group-hover:opacity-100 ml-2"
-                      title="Excluir"
-                    >
-                      ×
-                    </button>
+                    {editingNotebookId !== notebook.id && (
+                      <div className="relative ml-2">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setOpenDropdownId(openDropdownId === notebook.id ? null : notebook.id);
+                          }}
+                          className="text-slate-400 hover:text-slate-600 disabled:opacity-50 transition-colors duration-200 opacity-0 group-hover:opacity-100 p-1"
+                          title="Mais opções"
+                        >
+                          <svg
+                            className="w-5 h-5"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"
+                            />
+                          </svg>
+                        </button>
+                        {openDropdownId === notebook.id && (
+                          <>
+                            <div
+                              className="fixed inset-0 z-10"
+                              onClick={() => setOpenDropdownId(null)}
+                            />
+                            <div className="absolute right-0 mt-1 w-48 bg-white rounded-lg shadow-lg border border-slate-200 py-1 z-20">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleEditNotebook(notebook);
+                                }}
+                                className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 transition-colors flex items-center gap-2"
+                              >
+                                <svg
+                                  className="w-4 h-4"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                                  />
+                                </svg>
+                                Editar nome
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteNotebook(notebook.id);
+                                }}
+                                disabled={deletingNotebookId === notebook.id}
+                                className="w-full text-left px-4 py-2 text-sm text-rose-600 hover:bg-rose-50 disabled:opacity-50 transition-colors flex items-center gap-2"
+                              >
+                                <svg
+                                  className="w-4 h-4"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                                  />
+                                </svg>
+                                {deletingNotebookId === notebook.id ? 'Excluindo...' : 'Excluir'}
+                              </button>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  <div className="flex items-center text-xs text-slate-500 mt-4">
+                  <div 
+                    className="flex items-center text-xs text-slate-500 mt-4 cursor-pointer"
+                    onClick={() => handleNotebookClick(notebook.id)}
+                  >
                     <span>Criado em {new Date(notebook.created_at).toLocaleDateString('pt-BR')}</span>
                   </div>
                 </div>
@@ -621,7 +1088,10 @@ export default function Home() {
               <button
                 type="button"
                 onClick={() => setShowCreateModal(true)}
-                className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-medium text-white hover:bg-slate-800 transition-all duration-200 hover:shadow-lg active:scale-[0.98]"
+                className="rounded-xl px-6 py-3 text-sm font-medium text-white transition-all duration-200 hover:shadow-lg active:scale-[0.98]"
+                style={{ backgroundColor: '#085E83' }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#064d6a'}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#085E83'}
               >
                 + Criar agente
               </button>
@@ -633,7 +1103,10 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={() => setShowCreateModal(true)}
-                  className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-medium text-white hover:bg-slate-800 transition-all duration-200 hover:shadow-lg active:scale-[0.98]"
+                  className="rounded-xl px-6 py-3 text-sm font-medium text-white transition-all duration-200 hover:shadow-lg active:scale-[0.98]"
+                style={{ backgroundColor: '#085E83' }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#064d6a'}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#085E83'}
                 >
                   Criar primeiro agente
                 </button>
@@ -717,7 +1190,10 @@ export default function Home() {
                   <button
                     type="submit"
                     disabled={creatingNotebook}
-                    className="flex-1 rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 transition-all duration-200 active:scale-[0.98]"
+                    className="flex-1 rounded-lg px-4 py-2.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50 transition-all duration-200 active:scale-[0.98]"
+                    style={{ backgroundColor: '#085E83' }}
+                    onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#064d6a'}
+                    onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#085E83'}
                   >
                     {creatingNotebook ? 'Criando...' : 'Criar agente'}
                   </button>
@@ -729,7 +1205,7 @@ export default function Home() {
 
         {/* Status Message */}
         {statusMessage && (
-          <div className="fixed bottom-4 right-4 bg-slate-900 text-white px-4 py-2 rounded-lg shadow-lg text-sm animate-in slide-in-from-bottom-4 duration-200 z-50">
+          <div className="fixed bottom-4 right-4 text-white px-4 py-2 rounded-lg shadow-lg text-sm animate-in slide-in-from-bottom-4 duration-200 z-50" style={{ backgroundColor: '#085E83' }}>
             {statusMessage}
           </div>
         )}
@@ -768,7 +1244,7 @@ export default function Home() {
             </div>
           </div>
           {statusMessage && (
-            <span className="rounded-full bg-slate-900 px-3 py-1 text-xs text-white animate-in fade-in duration-200">
+            <span className="rounded-full px-3 py-1 text-xs text-white animate-in fade-in duration-200" style={{ backgroundColor: '#085E83' }}>
               {statusMessage}
             </span>
           )}
@@ -785,7 +1261,10 @@ export default function Home() {
               <button
                 type="button"
                 onClick={() => handleCreateChat(selectedNotebookId!)}
-                className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 transition-all duration-200 hover:shadow-md active:scale-[0.98]"
+                className="rounded-lg px-3 py-1.5 text-xs font-medium text-white transition-all duration-200 hover:shadow-md active:scale-[0.98]"
+                style={{ backgroundColor: '#085E83' }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#064d6a'}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#085E83'}
                 title="Nova conversa"
               >
                 + Novo
@@ -837,8 +1316,8 @@ export default function Home() {
         </aside>
 
         {/* Área de Chat */}
-        <div className="flex-1 flex flex-col overflow-hidden bg-white">
-          <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 flex flex-col overflow-hidden bg-white relative">
+          <div ref={messagesContainerRef} className="flex-1 overflow-y-auto" style={{ paddingBottom: '160px' }}>
             <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
               {messages.length === 0 ? (
                 <div className="flex items-center justify-center h-full">
@@ -855,32 +1334,34 @@ export default function Home() {
                       key={message.id}
                       className={`flex gap-4 ${message.role === 'user' ? 'justify-end' : 'justify-start'} animate-in fade-in slide-in-from-bottom-2 duration-300`}
                     >
-                      {message.role === 'assistant' && (
-                        <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gradient-to-br from-slate-200 to-slate-300 flex items-center justify-center text-sm font-semibold text-slate-700 shadow-sm">
-                          AI
-                        </div>
-                      )}
-                      <div className={`flex-1 max-w-[85%] ${message.role === 'user' ? 'order-2' : ''}`}>
-                        <div
-                          className={`rounded-2xl px-4 py-3 shadow-sm transition-all duration-200 ${
-                            message.role === 'user'
-                              ? 'bg-slate-900 text-white'
-                              : 'bg-slate-100 text-slate-900 border border-slate-200/60'
-                          }`}
-                        >
-                          {message.pending && message.role === 'assistant' ? (
-                            <div className="flex items-center gap-2 text-slate-500">
-                              <span className="inline-flex h-2 w-2 animate-ping rounded-full bg-slate-400"></span>
-                              <span className="text-sm">Pensando...</span>
-                            </div>
-                          ) : (
-                            <div className={`text-sm leading-relaxed ${message.pending ? 'opacity-70' : ''}`}>
-                              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                                {formatMessageContent(message.content)}
-                              </ReactMarkdown>
-                            </div>
-                          )}
-                          {message.role === 'assistant' && !message.pending && (
+                      <div className={`${message.role === 'user' ? 'order-2 flex justify-end w-full' : 'flex-1 '}`}>
+                        {message.role === 'user' ? (
+                          <div className="rounded-2xl rounded-tr-[8px] px-4 py-3 transition-all duration-200 bg-slate-100 text-slate-900 w-auto max-w-[85%] animate-in fade-in duration-300">
+                            {message.pending ? (
+                              <div className="text-sm leading-relaxed opacity-70 break-words whitespace-pre-wrap">
+                                {message.content}
+                              </div>
+                            ) : (
+                              <div className="text-sm leading-relaxed break-words whitespace-pre-wrap">
+                                {message.content}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <>
+                            {message.pending ? (
+                              <div className="flex items-center gap-2 text-slate-500">
+                                <span className="inline-flex h-2 w-2 animate-ping rounded-full bg-slate-400"></span>
+                                <span className="text-sm">Pensando...</span>
+                              </div>
+                            ) : (
+                              <div className={`text-sm leading-relaxed ${message.pending ? 'opacity-70' : ''}`}>
+                                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                                  {formatMessageContent(typingMessages[message.id] ?? message.content)}
+                                </ReactMarkdown>
+                              </div>
+                            )}
+                            {!message.pending && (
                             <div className="mt-4 rounded-2xl border border-slate-200 bg-white/80 p-3 text-xs text-slate-700">
                               <div className="flex flex-wrap items-center gap-2">
                                 <span className="font-medium text-slate-900">Como foi esta resposta?</span>
@@ -895,9 +1376,10 @@ export default function Home() {
                                     onClick={() => handleFeedbackChoice(message.id, option.value)}
                                     className={`rounded-full border px-3 py-1 transition-all duration-200 text-xs ${
                                       draft.rating === option.value
-                                        ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
+                                        ? 'text-white shadow-sm'
                                         : 'border-slate-300 text-slate-600 hover:border-slate-400 hover:bg-slate-50'
                                     }`}
+                                    style={draft.rating === option.value ? { backgroundColor: '#085E83', borderColor: '#085E83' } : {}}
                                   >
                                     {option.label}
                                   </button>
@@ -924,7 +1406,10 @@ export default function Home() {
                                       type="button"
                                       onClick={() => handleSubmitFeedback(message.id)}
                                       disabled={draft.status === 'saving'}
-                                      className="rounded-full bg-slate-900 px-4 py-1 text-white text-xs font-semibold disabled:opacity-50 transition-all duration-200 hover:shadow-md active:scale-[0.98]"
+                                      className="rounded-full px-4 py-1 text-white text-xs font-semibold disabled:opacity-50 transition-all duration-200 hover:shadow-md active:scale-[0.98]"
+                                      style={{ backgroundColor: '#085E83' }}
+                                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#064d6a'}
+                                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#085E83'}
                                     >
                                       {draft.status === 'saving' ? 'Enviando...' : 'Enviar feedback'}
                                     </button>
@@ -935,40 +1420,91 @@ export default function Home() {
                                 </div>
                               )}
                             </div>
-                          )}
-                        </div>
+                            )}
+                          </>
+                        )}
                       </div>
-                      {message.role === 'user' && (
-                        <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gradient-to-br from-slate-700 to-slate-900 flex items-center justify-center text-xs font-semibold text-white shadow-sm order-3">
-                          V
-                        </div>
-                      )}
                     </div>
                   );
                 })
               )}
+              <div ref={messagesEndRef} />
             </div>
           </div>
 
           {/* Input de mensagem */}
-          <div className="flex-shrink-0 border-t border-slate-200/60 bg-white/80 backdrop-blur-sm p-4">
-            <form className="max-w-3xl mx-auto flex gap-3" onSubmit={handleSendMessage}>
-              <input
-                type="text"
+          <div className="absolute bottom-0 left-0 right-0 flex flex-col items-center px-4" style={{ bottom: '20px' }}>
+            <form 
+              className="max-w-3xl w-full flex flex-col gap-2 border border-slate-300 rounded-[20px] bg-white shadow-lg transition-all duration-200 focus-within:border-slate-400 focus-within:ring-2 focus-within:ring-slate-200/50 p-2"
+              onSubmit={handleSendMessage}
+            >
+              {/* campoDigitacao */}
+              <textarea
                 value={chatInput}
-                onChange={(event) => setChatInput(event.target.value)}
-                placeholder="Mensagem..."
-                className="flex-1 rounded-lg border border-slate-300 px-4 py-2.5 text-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-200/50 transition-all duration-200"
+                onChange={(event) => {
+                  setChatInput(event.target.value);
+                  const textarea = event.target;
+                  textarea.style.height = 'auto';
+                  const maxHeight = 1.5 * 16 * 4; // 4 linhas * 1.5rem * 16px
+                  const newHeight = Math.min(textarea.scrollHeight, maxHeight);
+                  textarea.style.height = `${newHeight}px`;
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    if (chatInput.trim() && !sendingMessage && selectedChatId) {
+                      handleSendMessage(e as any);
+                    }
+                  }
+                }}
+                placeholder="Tire dúvidas sobre o documento..."
+                rows={1}
+                className="w-full px-4 py-3 text-sm resize-none border-0 focus:outline-none focus:ring-0 bg-transparent overflow-y-auto"
+                style={{
+                  minHeight: '1.5rem',
+                  lineHeight: '1.5rem',
+                  maxHeight: '6rem'
+                }}
                 disabled={!selectedChatId || sendingMessage}
               />
-              <button
-                type="submit"
-                disabled={!selectedChatId || sendingMessage || !chatInput.trim()}
-                className="rounded-lg bg-slate-900 px-6 py-2.5 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 transition-all duration-200 hover:shadow-md active:scale-[0.98]"
-              >
-                {sendingMessage ? 'Enviando...' : 'Enviar'}
-              </button>
+              {/* areaAcoes */}
+              <div className="flex items-center justify-end gap-1 pr-2 pb-1">
+                {/* botaoEnviar */}
+                <button
+                  type="submit"
+                  disabled={!selectedChatId || sendingMessage || !chatInput.trim()}
+                  className="flex-shrink-0 w-8 h-8 rounded-full text-white disabled:cursor-not-allowed disabled:opacity-50 transition-all duration-200 active:scale-[0.95] flex items-center justify-center"
+                  style={{ backgroundColor: '#085E83' }}
+                  onMouseEnter={(e) => !e.currentTarget.disabled && (e.currentTarget.style.backgroundColor = '#064d6a')}
+                  onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#085E83'}
+                  title="Enviar"
+                >
+                  {sendingMessage ? (
+                    <span className="inline-flex h-2 w-2 animate-ping rounded-full bg-white"></span>
+                  ) : (
+                    <svg
+                      className="w-5 h-5"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M13 7l5 5m0 0l-5 5m5-5H6"
+                      />
+                    </svg>
+                  )}
+                </button>
+                {/* featureFutura1 */}
+                {/* featureFutura2 */}
+                {/* featureFutura... */}
+              </div>
             </form>
+            <p className="max-w-3xl w-full text-xs text-slate-500 mt-2 text-center px-2">
+              A IA pode cometer erros. Sempre verifique o documento na íntegra.
+            </p>
           </div>
         </div>
       </div>

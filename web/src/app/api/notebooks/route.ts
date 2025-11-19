@@ -66,6 +66,47 @@ export async function POST(request: Request) {
   }
 }
 
+const updateSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(3).optional(),
+  description: z.string().optional()
+});
+
+export async function PUT(request: Request) {
+  try {
+    const body = await request.json();
+    const parsed = updateSchema.safeParse(body);
+    if (!parsed.success) {
+      return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+    }
+
+    const supabase = getServiceSupabase();
+    const updateData: { name?: string; description?: string | null } = {};
+    
+    if (parsed.data.name !== undefined) {
+      updateData.name = parsed.data.name;
+    }
+    if (parsed.data.description !== undefined) {
+      updateData.description = parsed.data.description || null;
+    }
+
+    const { data: notebook, error } = await supabase
+      .from('notebooks')
+      .update(updateData)
+      .eq('id', parsed.data.id)
+      .select()
+      .single();
+
+    if (error || !notebook) {
+      throw new Error(error?.message ?? 'Erro ao atualizar notebook');
+    }
+
+    return NextResponse.json({ data: notebook });
+  } catch (error) {
+    return NextResponse.json({ error: (error as Error).message }, { status: 500 });
+  }
+}
+
 const deleteSchema = z.object({ id: z.string().min(1) });
 
 export async function DELETE(request: Request) {

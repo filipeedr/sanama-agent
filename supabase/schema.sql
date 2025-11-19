@@ -35,6 +35,29 @@ create trigger documents_updated_at
 before update on public.documents
 for each row execute procedure public.set_updated_at();
 
+-- Função para validar o limite de 50 documentos
+create or replace function public.check_document_limit()
+returns trigger as $$
+declare
+  current_count integer;
+begin
+  -- Conta o número total de documentos
+  select count(*) into current_count from public.documents;
+  
+  -- Se já atingiu o limite de 50, bloqueia a inserção
+  if current_count >= 50 then
+    raise exception 'Limite de 50 documentos atingido. Exclua documentos antes de adicionar novos.';
+  end if;
+  
+  return new;
+end;
+$$ language plpgsql;
+
+-- Trigger para validar o limite antes de inserir
+create trigger documents_limit_check
+before insert on public.documents
+for each row execute procedure public.check_document_limit();
+
 create table if not exists public.document_chunks (
   id bigserial primary key,
   document_id uuid not null references public.documents(id) on delete cascade,
