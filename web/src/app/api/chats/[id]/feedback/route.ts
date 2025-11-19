@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getServiceSupabase } from '@/lib/supabase';
 import { embedTexts } from '@/lib/embeddings';
-import type { ChatRow } from '@/types/supabase';
+import type { ChatMessageRow, ChatRow } from '@/types/supabase';
 
 const feedbackSchema = z.object({
   messageId: z.string().min(1),
@@ -38,7 +38,7 @@ export async function POST(request: Request, context: RouteParams) {
       .from('chat_messages')
       .select('*')
       .eq('id', parsed.data.messageId)
-      .single();
+      .single<ChatMessageRow>();
 
     if (messageError || !message || message.chat_id !== chatId || message.role !== 'assistant') {
       return NextResponse.json({ error: 'Mensagem inválida para feedback.' }, { status: 400 });
@@ -52,7 +52,7 @@ export async function POST(request: Request, context: RouteParams) {
       .lte('created_at', message.created_at)
       .order('created_at', { ascending: false })
       .limit(1)
-      .maybeSingle();
+      .maybeSingle<ChatMessageRow>();
 
     if (!userMessage?.content) {
       return NextResponse.json({ error: 'Não foi possível localizar a pergunta associada.' }, { status: 400 });
