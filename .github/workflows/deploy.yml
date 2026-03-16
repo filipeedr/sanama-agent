@@ -20,14 +20,14 @@ jobs:
           SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
           mkdir -p ~/.ssh
-          echo "$SSH_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
+          echo "$SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
           
           cat > ~/.ssh/config << SSHEOF
           Host deploy-server
             HostName ssh.edelmarques.com.br
             User edelserver
-            IdentityFile ~/.ssh/id_ed25519
+            IdentityFile ~/.ssh/id_rsa
             StrictHostKeyChecking no
             ProxyCommand cloudflared access ssh --hostname %h --service-token-id ${{ secrets.CF_CLIENT_ID }} --service-token-secret ${{ secrets.CF_CLIENT_SECRET }}
           SSHEOF
