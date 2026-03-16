@@ -18,5 +18,7 @@ jobs:
           script: |
             cd ~/sanama-agent
             git pull origin main
-            npm install
-            pm2 restart sanama-agent
+            docker build -t sanama-agent -f web/Dockerfile web/
+            docker stop sanama-agent
+            docker rm sanama-agent
+            docker run -d --name sanama-agent -p 3001:3000 sanama-agent
