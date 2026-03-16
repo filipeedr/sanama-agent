@@ -18,11 +18,13 @@ jobs:
       - name: Deploy
         env:
           SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_CLIENT_SECRET }}
         run: |
           mkdir -p ~/.ssh
           echo "$SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh -o StrictHostKeyChecking=no -o ProxyCommand="cloudflared access ssh --hostname ssh.edelmarques.com.br" edelserver@ssh.edelmarques.com.br << 'EOF'
+          ssh -o StrictHostKeyChecking=no -o ProxyCommand="cloudflared access ssh --hostname ssh.edelmarques.com.br --id $CF_ACCESS_CLIENT_ID --secret $CF_ACCESS_CLIENT_SECRET" edelserver@ssh.edelmarques.com.br << 'EOF'
             cd ~/sanama-agent
             git pull origin main
             docker build -t sanama-agent -f web/Dockerfile web/
