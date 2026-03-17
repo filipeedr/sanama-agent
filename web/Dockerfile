@@ -26,8 +26,16 @@ COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder /app/tessdata ./tessdata
+# tesseract.js e todas as suas dependências diretas
 COPY --from=builder /app/node_modules/tesseract.js ./node_modules/tesseract.js
 COPY --from=builder /app/node_modules/tesseract.js-core ./node_modules/tesseract.js-core
+COPY --from=builder /app/node_modules/bmp-js ./node_modules/bmp-js
+COPY --from=builder /app/node_modules/idb-keyval ./node_modules/idb-keyval
+COPY --from=builder /app/node_modules/is-url ./node_modules/is-url
+COPY --from=builder /app/node_modules/node-fetch ./node_modules/node-fetch
+COPY --from=builder /app/node_modules/regenerator-runtime ./node_modules/regenerator-runtime
+COPY --from=builder /app/node_modules/wasm-feature-detect ./node_modules/wasm-feature-detect
+COPY --from=builder /app/node_modules/zlibjs ./node_modules/zlibjs
 
 USER nextjs
 EXPOSE 3000
